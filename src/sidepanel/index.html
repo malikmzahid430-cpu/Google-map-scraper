@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Al-Aqsa Scraper</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="header">
+      <div class="mark" aria-hidden="true">AQ</div>
+      <div class="titles">
+        <h1>Al-Aqsa Scraper</h1>
+        <div class="sub">Google Maps Lead Generation</div>
+      </div>
+      <button id="btn-refresh" class="ghost" title="Refresh panel" aria-label="Refresh">&#8635;</button>
+    </header>
+
+    <nav class="tabs" role="tablist" id="tabs">
+      <button class="tab" role="tab" data-view="home" aria-selected="true">Home</button>
+      <button class="tab" role="tab" data-view="jobs" aria-selected="false">Jobs</button>
+      <button class="tab" role="tab" data-view="data" aria-selected="false">Data</button>
+      <button class="tab" role="tab" data-view="filter" aria-selected="false">Filter</button>
+      <button class="tab" role="tab" data-view="enrich" aria-selected="false">Enrich</button>
+      <button class="tab" role="tab" data-view="export" aria-selected="false">Export</button>
+      <button class="tab" role="tab" data-view="settings" aria-selected="false">Settings</button>
+    </nav>
+
+    <main class="views" id="views">
+      <section class="view active" id="view-home" role="tabpanel"></section>
+      <section class="view" id="view-jobs" role="tabpanel"></section>
+      <section class="view" id="view-data" role="tabpanel"></section>
+      <section class="view" id="view-filter" role="tabpanel"></section>
+      <section class="view" id="view-enrich" role="tabpanel"></section>
+      <section class="view" id="view-export" role="tabpanel"></section>
+      <section class="view" id="view-settings" role="tabpanel"></section>
+      <section class="view" id="view-diagnostics" role="tabpanel"></section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

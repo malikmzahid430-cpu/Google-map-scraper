@@ -1,0 +1,210 @@
+{
+  "manifest_version": 3,
+  "name": "Al-Aqsa Scraper",
+  "version": "4.0.0",
+  "description": "Professional Google Maps lead-generation scraper. One-screen collection, reliable full-list scraping, place-panel detail resolution, optional enrichment, deduplication, scoring and export to CSV, Excel or Google Sheets.",
+  "icons": {
+    "16": "assets/icons/icon-16.png",
+    "32": "assets/icons/icon-32.png",
+    "48": "assets/icons/icon-48.png",
+    "128": "assets/icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Al-Aqsa Scraper",
+    "default_icon": {
+      "16": "assets/icons/icon-16.png",
+      "32": "assets/icons/icon-32.png",
+      "48": "assets/icons/icon-48.png",
+      "128": "assets/icons/icon-128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/index.html"
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.google.com/maps/*",
+        "https://*.google.com.pk/maps/*",
+        "https://*.google.co.in/maps/*",
+        "https://*.google.com.bd/maps/*",
+        "https://*.google.lk/maps/*",
+        "https://*.google.com.np/maps/*",
+        "https://*.google.co.jp/maps/*",
+        "https://*.google.co.kr/maps/*",
+        "https://*.google.com.hk/maps/*",
+        "https://*.google.com.tw/maps/*",
+        "https://*.google.com.sg/maps/*",
+        "https://*.google.com.my/maps/*",
+        "https://*.google.co.id/maps/*",
+        "https://*.google.com.ph/maps/*",
+        "https://*.google.co.th/maps/*",
+        "https://*.google.com.vn/maps/*",
+        "https://*.google.com.au/maps/*",
+        "https://*.google.co.nz/maps/*",
+        "https://*.google.ae/maps/*",
+        "https://*.google.com.sa/maps/*",
+        "https://*.google.com.qa/maps/*",
+        "https://*.google.com.kw/maps/*",
+        "https://*.google.com.bh/maps/*",
+        "https://*.google.com.om/maps/*",
+        "https://*.google.jo/maps/*",
+        "https://*.google.com.lb/maps/*",
+        "https://*.google.com.tr/maps/*",
+        "https://*.google.co.il/maps/*",
+        "https://*.google.com.eg/maps/*",
+        "https://*.google.co.za/maps/*",
+        "https://*.google.com.ng/maps/*",
+        "https://*.google.co.ke/maps/*",
+        "https://*.google.com.gh/maps/*",
+        "https://*.google.co.uk/maps/*",
+        "https://*.google.ie/maps/*",
+        "https://*.google.de/maps/*",
+        "https://*.google.fr/maps/*",
+        "https://*.google.es/maps/*",
+        "https://*.google.it/maps/*",
+        "https://*.google.nl/maps/*",
+        "https://*.google.be/maps/*",
+        "https://*.google.ch/maps/*",
+        "https://*.google.at/maps/*",
+        "https://*.google.pt/maps/*",
+        "https://*.google.gr/maps/*",
+        "https://*.google.pl/maps/*",
+        "https://*.google.cz/maps/*",
+        "https://*.google.sk/maps/*",
+        "https://*.google.hu/maps/*",
+        "https://*.google.ro/maps/*",
+        "https://*.google.bg/maps/*",
+        "https://*.google.hr/maps/*",
+        "https://*.google.si/maps/*",
+        "https://*.google.se/maps/*",
+        "https://*.google.no/maps/*",
+        "https://*.google.dk/maps/*",
+        "https://*.google.fi/maps/*",
+        "https://*.google.ru/maps/*",
+        "https://*.google.com.ua/maps/*",
+        "https://*.google.ca/maps/*",
+        "https://*.google.com.mx/maps/*",
+        "https://*.google.com.br/maps/*",
+        "https://*.google.com.ar/maps/*",
+        "https://*.google.cl/maps/*",
+        "https://*.google.com.co/maps/*",
+        "https://*.google.com.pe/maps/*"
+      ],
+      "js": [
+        "src/collector/content-loader.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "tabs",
+    "scripting",
+    "downloads",
+    "identity",
+    "sidePanel",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://sheets.googleapis.com/*",
+    "https://www.googleapis.com/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "oauth2": {
+    "client_id": "PASTE_YOUR_OAUTH_CLIENT_ID_HERE.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/spreadsheets",
+      "https://www.googleapis.com/auth/drive.file"
+    ]
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/*",
+        "assets/*"
+      ],
+      "matches": [
+        "https://*.google.com/*",
+        "https://*.google.com.pk/*",
+        "https://*.google.co.in/*",
+        "https://*.google.com.bd/*",
+        "https://*.google.lk/*",
+        "https://*.google.com.np/*",
+        "https://*.google.co.jp/*",
+        "https://*.google.co.kr/*",
+        "https://*.google.com.hk/*",
+        "https://*.google.com.tw/*",
+        "https://*.google.com.sg/*",
+        "https://*.google.com.my/*",
+        "https://*.google.co.id/*",
+        "https://*.google.com.ph/*",
+        "https://*.google.co.th/*",
+        "https://*.google.com.vn/*",
+        "https://*.google.com.au/*",
+        "https://*.google.co.nz/*",
+        "https://*.google.ae/*",
+        "https://*.google.com.sa/*",
+        "https://*.google.com.qa/*",
+        "https://*.google.com.kw/*",
+        "https://*.google.com.bh/*",
+        "https://*.google.com.om/*",
+        "https://*.google.jo/*",
+        "https://*.google.com.lb/*",
+        "https://*.google.com.tr/*",
+        "https://*.google.co.il/*",
+        "https://*.google.com.eg/*",
+        "https://*.google.co.za/*",
+        "https://*.google.com.ng/*",
+        "https://*.google.co.ke/*",
+        "https://*.google.com.gh/*",
+        "https://*.google.co.uk/*",
+        "https://*.google.ie/*",
+        "https://*.google.de/*",
+        "https://*.google.fr/*",
+        "https://*.google.es/*",
+        "https://*.google.it/*",
+        "https://*.google.nl/*",
+        "https://*.google.be/*",
+        "https://*.google.ch/*",
+        "https://*.google.at/*",
+        "https://*.google.pt/*",
+        "https://*.google.gr/*",
+        "https://*.google.pl/*",
+        "https://*.google.cz/*",
+        "https://*.google.sk/*",
+        "https://*.google.hu/*",
+        "https://*.google.ro/*",
+        "https://*.google.bg/*",
+        "https://*.google.hr/*",
+        "https://*.google.si/*",
+        "https://*.google.se/*",
+        "https://*.google.no/*",
+        "https://*.google.dk/*",
+        "https://*.google.fi/*",
+        "https://*.google.ru/*",
+        "https://*.google.com.ua/*",
+        "https://*.google.ca/*",
+        "https://*.google.com.mx/*",
+        "https://*.google.com.br/*",
+        "https://*.google.com.ar/*",
+        "https://*.google.cl/*",
+        "https://*.google.com.co/*",
+        "https://*.google.com.pe/*"
+      ]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self';"
+  },
+  "minimum_chrome_version": "114"
+}
