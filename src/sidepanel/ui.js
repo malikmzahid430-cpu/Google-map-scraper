@@ -100,14 +100,14 @@ export function coverageRow(row) {
   </div>`;
 }
 
-/** Field-status chip for the Data table. */
+/** Field-status chip for the Data table: ✓ Found / — Not available / ⏳ Pending / ⚠ Error. */
 export function statusChip(status) {
   const map = {
     Found: ['ok', '✓'],
     'Not Found': ['muted', '—'],
     'Not Requested': ['muted', '·'],
-    Pending: ['pending', '○'],
-    Failed: ['bad', '✗'],
+    Pending: ['pending', '⏳'],
+    Failed: ['bad', '⚠'],
   };
   const [cls, glyph] = map[status] || ['muted', '—'];
   return `<span class="st-chip ${cls}" data-status="${esc(status)}" title="${esc(status)}">${glyph}</span>`;

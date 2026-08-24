@@ -9,12 +9,17 @@
 <body>
   <div id="app">
     <header class="header">
-      <div class="mark" aria-hidden="true">AQ</div>
+      <div class="mark" aria-hidden="true"><img src="../../assets/icons/icon-48.png" alt="" width="26" height="26"></div>
       <div class="titles">
         <h1>Al-Aqsa Scraper</h1>
-        <div class="sub">Google Maps Lead Generation</div>
+        <div class="sub">
+          <span id="conn-pill" class="conn-pill" role="status"><span class="dot"></span><span class="txt">Google Maps</span></span>
+        </div>
       </div>
-      <button id="btn-refresh" class="ghost" title="Refresh panel" aria-label="Refresh">&#8635;</button>
+      <div class="header-actions">
+        <button id="btn-refresh" class="ghost icon-btn" title="Refresh panel" aria-label="Refresh">&#8635;</button>
+        <button id="btn-settings" class="ghost icon-btn" title="Settings" aria-label="Open Settings">&#9881;</button>
+      </div>
     </header>
 
     <nav class="tabs" role="tablist" id="tabs">
@@ -24,7 +29,6 @@
       <button class="tab" role="tab" data-view="filter" aria-selected="false">Filter</button>
       <button class="tab" role="tab" data-view="enrich" aria-selected="false">Enrich</button>
       <button class="tab" role="tab" data-view="export" aria-selected="false">Export</button>
-      <button class="tab" role="tab" data-view="settings" aria-selected="false">Settings</button>
     </nav>
 
     <main class="views" id="views">

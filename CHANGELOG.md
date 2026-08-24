@@ -1,5 +1,57 @@
 # Changelog
 
+## 4.2.0 — presentation-layer redesign
+
+A UI/UX-only pass over the side panel. Nothing under `src/collector/`,
+`src/background/`, `src/enrich/`, `src/export/`, `src/jobs/`, `src/engines/`
+or `src/core/quality.js` changed — every file touched lives in
+`src/sidepanel/`, and `tools/verify-isolation.mjs` /
+`tools/verify-build.mjs` both still pass, same as before this release.
+
+### Changed — visual design
+- New color/spacing/shadow token set in `styles.css` (an added teal
+  `--accent-2`, refined text/hairline/shadow tokens for both light and dark)
+  and several new small components: a header connection pill, live
+  field-coverage tiles, social-platform badges, job status badges, a
+  prominent `.cta` button style, and a styled collapsible
+  (`<details class="adv">`) for advanced settings.
+- Header now shows the extension's own icon, the product name, a
+  `● Connected` / `Google Maps` pill reflecting live Maps-tab detection, and
+  a dedicated Settings button — Settings moved out of the tab strip into
+  that button, leaving the main nav at Home / Jobs / Data / Filter / Enrich
+  / Export.
+- Home: rewritten hero copy, an explicit "optional — found during Enrich"
+  section for email/social field checkboxes, a live per-field coverage grid
+  while a job is running, and a completed-state action row (View Data /
+  Enrich Missing Data / Filter Results / Export).
+- Data table: Website and Email are now clickable links; Social renders as
+  clickable per-platform badges instead of a single "yes" flag; the
+  status-glyph legend uses ✓ / — / · / ⏳ / ⚠ consistently with the rest of
+  the panel.
+- Filter: match count promoted to a large stat with an always-visible Reset
+  button (previously only shown once a filter was active).
+- Enrich: added a coverage stat row (Email/Social/Website counts) above the
+  enrichment controls; removed a `Pause` control that had no backing
+  message handler and would have paused the unrelated detail-resolution
+  stage instead.
+- Jobs: status text replaced with badges using the vocabulary Completed /
+  Collecting / Paused / Recovering / Partial / Failed, driven by existing
+  `job.status`/`job.stuck` fields — no new job states were introduced.
+- Settings: reorganized into named sections (General, Collection,
+  Enrichment, Storage, Google Sheets, Diagnostics); scroll/patience,
+  detail-resolution and lead-score-weight tuning — the settings a normal
+  user never needs — moved into a collapsible "Advanced Settings" section.
+
+### Verified unchanged — panel persistence
+- The side panel was already window-scoped, not tab-scoped: nothing in
+  `background/service-worker.js` calls `chrome.sidePanel.setOptions` with a
+  `tabId`, so Chrome already keeps one panel instance per window across tab
+  switches. Job state already lives in `chrome.storage` and is read by
+  `jobsApi.getActiveJob()` independent of which tab is active, so switching
+  tabs, closing the panel, or reopening it does not stop or lose a running
+  collection. No background/service-worker code changed to achieve this —
+  it was already true of the existing architecture.
+
 ## 4.1.0 — card-first collection, no per-business tabs
 
 A second audit — this time comparing the codebase against a working prior

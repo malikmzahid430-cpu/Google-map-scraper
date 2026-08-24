@@ -15,10 +15,17 @@ export function renderFilter(state) {
   const total = state.records.length;
 
   return `
-  <div class="card tight">
-    <h2>Matching <span class="count">${shown} of ${total}</span></h2>
-    <input type="search" id="f-search" placeholder="Search name, address, website, phone…" value="${esc(c.search || '')}">
-    ${state.activeFilterCount() ? `<button class="ghost block" data-act="clear" style="margin-top:8px">Clear ${state.activeFilterCount()} filter(s)</button>` : ''}
+  <div class="card hero-card tight">
+    <div class="row" style="align-items:flex-start">
+      <div class="grow">
+        <div class="stat accent" style="background:transparent;border:0;padding:0">
+          <div class="v" style="font-size:26px">${shown}</div>
+          <div class="k">matching lead${shown === 1 ? '' : 's'} of ${total}</div>
+        </div>
+      </div>
+      <button class="ghost" data-act="clear" ${state.activeFilterCount() ? '' : 'disabled'}>Reset${state.activeFilterCount() ? ` (${state.activeFilterCount()})` : ''}</button>
+    </div>
+    <input type="search" id="f-search" placeholder="Search name, address, website, phone…" value="${esc(c.search || '')}" style="margin-top:10px">
   </div>
 
   <div class="card">
@@ -142,8 +149,11 @@ export function bindFilter() {
     const app = await import('../app.js');
     // Update the count without re-rendering, so the input keeps focus.
     app.state.criteria.search = e.target.value;
-    const label = root.querySelector('.card h2 .count');
-    if (label) label.textContent = `${app.state.visibleRecords().length} of ${app.state.records.length}`;
+    const shown = app.state.visibleRecords().length;
+    const count = root.querySelector('.hero-card .stat .v');
+    const label = root.querySelector('.hero-card .stat .k');
+    if (count) count.textContent = String(shown);
+    if (label) label.textContent = `matching lead${shown === 1 ? '' : 's'} of ${app.state.records.length}`;
   });
 
   onClick(root, '[data-avail]', async (e, el) => {

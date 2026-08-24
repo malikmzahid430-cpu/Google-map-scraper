@@ -68,9 +68,9 @@ function renderIntro(state) {
   if (state.job || (state.queue && state.queue.items && state.queue.items.length)) return '';
   return `
   <div class="hero">
-    <div class="hero-title">Find business leads from Google Maps</div>
-    <p class="hero-sub">Enter what you want to find and where you want to find it, then press
-      <strong>Start Collecting Leads</strong>. Already on Google Maps with a search open? We'll use that instead.</p>
+    <div class="hero-title">Find Business Leads</div>
+    <p class="hero-sub">Collect business data from Google Maps quickly. Enter what you want to find and where, then press
+      <strong>Start Collecting Leads</strong> — already on Google Maps with a search open? We'll offer to use that instead.</p>
   </div>`;
 }
 
@@ -179,10 +179,11 @@ function renderModeCard(state, disabled) {
 function renderFieldsCard(state, disabled) {
   const selected = new Set(state.settings.fields || []);
   const core = FIELDS.filter((f) => f.group === 'core');
+  const enrichFields = FIELDS.filter((f) => f.group === 'enrich');
 
   return `
   <div class="card">
-    <h2>Fields <span class="count">${selected.size} selected</span></h2>
+    <h2>Fields to collect <span class="count">${selected.size} selected</span></h2>
     <div class="check-grid">
       ${core.map((f) => `
         <label class="check">
@@ -190,7 +191,18 @@ function renderFieldsCard(state, disabled) {
           <span>${esc(f.label)}</span>
         </label>`).join('')}
     </div>
-    <p class="hint tiny"><strong>Address</strong> is the street line from the results card. <strong>Full Address</strong> is the complete postal address from the place panel. When only a street line exists, Full Address stays blank rather than showing a partial one — the Data tab marks it "Not Found".</p>
+    <p class="hint tiny"><strong>Address</strong> is the street line from the results card. <strong>Full Address</strong> is the complete postal address, resolved separately when the card doesn't show it. When genuinely unavailable, it stays blank rather than showing a partial one.</p>
+
+    <div class="divider"></div>
+    <div class="section-label" style="margin:0 0 6px">Optional — found during Enrich, not collection</div>
+    <div class="check-grid">
+      ${enrichFields.map((f) => `
+        <label class="check">
+          <input type="checkbox" data-field="${esc(f.key)}" ${selected.has(f.key) ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+          <span>${esc(f.label)}</span>
+        </label>`).join('')}
+    </div>
+    <p class="hint tiny">Selecting these doesn't slow collection down — they're only looked up when you run <strong>Enrich</strong> afterwards, and only for records that need them.</p>
   </div>`;
 }
 
@@ -231,10 +243,10 @@ function renderStatusCard(state, job, status, running, paused, active) {
       <h2>Status</h2>
       <div class="status-line"><span class="dot"></span><span>Ready</span></div>
       <div style="height:10px"></div>
-      <button class="primary lg block" data-act="start" ${state.busy ? 'disabled' : ''}>
+      <button class="primary cta block" data-act="start" ${state.busy ? 'disabled' : ''}>
         ${state.busy ? 'Starting…' : (multi ? 'START ALL SEARCHES' : 'START COLLECTING LEADS')}
       </button>
-      <p class="hint tiny" style="margin-top:9px">The panel stays open while you browse, and collection keeps running if you close it.</p>
+      <p class="hint tiny" style="margin-top:9px">Collection keeps running if you switch tabs or close this panel — come back anytime to see progress.</p>
     </div>`;
   }
 
@@ -293,6 +305,7 @@ function renderStatusCard(state, job, status, running, paused, active) {
       ${stat(c.duplicates || 0, 'Duplicates')}
     </div>
 
+    ${active ? renderLiveFieldGrid(q) : ''}
     ${resolving ? `<p class="hint" style="margin-top:9px">Resolving full address ${detail.done} / ${detail.total}</p>` : ''}
 
     <div class="divider"></div>
@@ -300,15 +313,16 @@ function renderStatusCard(state, job, status, running, paused, active) {
 
     ${done && (c.found || 0) > 0 ? `
       <div class="divider"></div>
-      <p class="hint" style="margin-bottom:9px"><strong>&#10003; Collection complete</strong> — ${c.found} business${c.found === 1 ? '' : 'es'}.</p>
-      <button class="primary block lg" data-act="goto-enrich" style="margin-bottom:6px">ENRICH DATA</button>
+      <p class="hint" style="margin-bottom:9px"><strong>&#10003; Collection Complete</strong> — ${c.found} business${c.found === 1 ? '' : 'es'}.</p>
       <div class="row wrap">
         <button class="grow" data-act="goto-data">View Data</button>
-        <button class="grow" data-act="goto-export">Export</button>
+        <button class="grow" data-act="goto-enrich">Enrich Missing Data</button>
       </div>
       <div class="row wrap" style="margin-top:6px">
-        <button class="grow" data-act="dedupe">Remove Duplicates</button>
-      </div>` : ''}
+        <button class="grow" data-act="goto-filter">Filter Results</button>
+        <button class="grow" data-act="goto-export">Export</button>
+      </div>
+      <button class="ghost block" data-act="dedupe" style="margin-top:6px">Remove Duplicates</button>` : ''}
     ${status === JOB_STATUS.ERROR ? `
       <div class="divider"></div>
       <button class="block" data-act="retry-search">Retry this search</button>` : ''}
@@ -317,6 +331,19 @@ function renderStatusCard(state, job, status, running, paused, active) {
   ${renderQualityCard(q)}
   ${renderHealthCard(tech, detail)}
   `;
+}
+
+/** Live per-field counts while collecting — "Website 128 · Phone 133 · …" */
+function renderLiveFieldGrid(q) {
+  if (!q || !q.total) return '';
+  const pick = (key) => (q.fields && q.fields[key] ? q.fields[key].found : 0);
+  return `
+  <div class="field-grid">
+    <div class="field-tile"><span class="k">Website</span><span class="v">${pick('website')}</span></div>
+    <div class="field-tile"><span class="k">Phone</span><span class="v">${pick('phone')}</span></div>
+    <div class="field-tile"><span class="k">Full Address</span><span class="v">${pick('fullAddress')}</span></div>
+    <div class="field-tile"><span class="k">Rating</span><span class="v">${pick('rating')}</span></div>
+  </div>`;
 }
 
 /**
@@ -539,6 +566,7 @@ export function bindHome() {
 
       case 'goto-data': app.switchView('data'); break;
       case 'goto-enrich': app.switchView('enrich'); break;
+      case 'goto-filter': app.switchView('filter'); break;
       case 'goto-export': app.switchView('export'); break;
 
       case 'queue-run': await app.command(MSG.QUEUE_RUN, {}, { successMessage: 'Queue started.' }); break;

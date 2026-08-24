@@ -23,9 +23,20 @@ const COLUMNS = [
   { key: 'phone', label: 'Phone' },
   { key: 'website', label: 'Website' },
   { key: 'email', label: 'Email' },
+  { key: 'social', label: 'Social' },
   { key: 'leadScore', label: 'Score', numeric: true },
   { key: 'searchQuery', label: 'Search' },
   { key: 'jobLabel', label: 'Job' },
+];
+
+/** Short badge label + tooltip for each social platform, in display order. */
+const SOCIAL_BADGES = [
+  ['facebook', 'FB', 'Facebook'],
+  ['instagram', 'IG', 'Instagram'],
+  ['tiktok', 'TT', 'TikTok'],
+  ['linkedin', 'LI', 'LinkedIn'],
+  ['youtube', 'YT', 'YouTube'],
+  ['twitter', 'X', 'X / Twitter'],
 ];
 
 const STATUS_FIELDS = [
@@ -109,11 +120,11 @@ function renderTable(state, all) {
         <button data-page="next" ${page >= pages - 1 ? 'disabled' : ''}>Next</button>
       </div>` : ''}
     <p class="hint tiny" style="margin-top:8px">
-      <span class="st-chip ok">✓</span> found ·
-      <span class="st-chip muted">—</span> not published ·
-      <span class="st-chip muted">·</span> not requested ·
-      <span class="st-chip pending">○</span> pending ·
-      <span class="st-chip bad">✗</span> failed. Only ✗ is a technical error.
+      <span class="st-chip ok">✓</span> Found ·
+      <span class="st-chip muted">—</span> Not available ·
+      <span class="st-chip muted">·</span> Not requested ·
+      <span class="st-chip pending">⏳</span> Pending ·
+      <span class="st-chip bad">⚠</span> Error. Only ⚠ is a technical error — a missing field is normal.
     </p>
   </div>`;
 }
@@ -127,6 +138,13 @@ function renderStatusRow(record, ctx) {
 }
 
 function cell(record, col) {
+  if (col.key === 'social') {
+    const present = SOCIAL_BADGES.filter(([key]) => record[key]);
+    if (!present.length) return '<td><span class="muted">—</span></td>';
+    return `<td><span class="social-badges">${present.map(([key, short, label]) =>
+      `<a class="social-badge" href="${esc(record[key])}" target="_blank" rel="noreferrer noopener" title="${esc(label)}: ${esc(record[key])}">${esc(short)}</a>`).join('')}</span></td>`;
+  }
+
   const raw = record[col.key];
   const value = raw == null ? '' : String(raw);
 
@@ -136,6 +154,9 @@ function cell(record, col) {
   }
   if (col.key === 'website' && value) {
     return `<td><a href="${esc(value)}" target="_blank" rel="noreferrer noopener" title="${esc(value)}">${esc(shortUrl(value))}</a></td>`;
+  }
+  if (col.key === 'email' && value) {
+    return `<td><a href="mailto:${esc(value)}" title="Email ${esc(value)}">${esc(value)}</a></td>`;
   }
   if (!value) return '<td><span class="muted">—</span></td>';
   return `<td class="${col.numeric ? 'num' : ''}" title="${esc(value)}">${esc(value)}</td>`;

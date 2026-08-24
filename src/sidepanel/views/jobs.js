@@ -44,12 +44,19 @@ export function renderJobs(state) {
   </div>`;
 }
 
-/** A job that errored after collecting something is "Partial", not a plain failure. */
-function jobStatusLabel(job) {
+/**
+ * Status badge: text + CSS variant, covering the vocabulary a user actually
+ * cares about (Completed / Collecting / Paused / Recovering / Partial /
+ * Failed) rather than the raw internal job.status.
+ */
+function jobStatusBadge(job) {
   const found = job.count || 0;
-  if (job.status === 'error') return found > 0 ? 'Partial' : 'Failed';
-  if (job.status === 'completed' && found === 0) return 'No results';
-  return job.status;
+  if (job.status === 'running') return job.stuck ? ['Recovering', 'paused'] : ['Collecting', 'running'];
+  if (job.status === 'paused') return ['Paused', 'paused'];
+  if (job.status === 'error') return found > 0 ? ['Partial', 'partial'] : ['Failed', 'failed'];
+  if (job.status === 'stopped') return [found > 0 ? 'Stopped' : 'Stopped — no results', 'paused'];
+  if (job.status === 'completed') return [found > 0 ? 'Completed' : 'No results', 'done'];
+  return [job.status, ''];
 }
 
 function renderJob(job, state, selected) {
@@ -57,6 +64,7 @@ function renderJob(job, state, selected) {
   const q = job.quality;
   const date = new Date(job.createdAt);
   const dateLabel = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const [badgeText, badgeClass] = jobStatusBadge(job);
 
   return `
   <div class="job-card ${isActive ? 'active' : ''}">
@@ -65,8 +73,10 @@ function renderJob(job, state, selected) {
       <div class="meta">
         <div class="name">${esc(job.label || job.query || job.id)}</div>
         <div class="sub">
-          ${esc(dateLabel)} · ${esc(jobStatusLabel(job))}${job.combinedFrom ? ' · combined' : ''}
-          ${q ? ` · ${q.complete}/${q.total} complete` : ''}
+          <span class="job-badge ${badgeClass}">${esc(badgeText)}</span>
+          <span>${esc(dateLabel)}</span>
+          ${job.combinedFrom ? '<span>combined</span>' : ''}
+          ${q ? `<span>${q.complete}/${q.total} complete</span>` : ''}
         </div>
       </div>
       <span class="n">${job.count || 0}</span>

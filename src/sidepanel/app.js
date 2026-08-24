@@ -249,7 +249,24 @@ export async function refreshMapsDetect() {
     query: (res.ok && res.data && res.data.query) || '',
     href: (res.ok && res.data && res.data.href) || '',
   };
+  paintConnectionPill();
   if (state.view === 'home') paint();
+}
+
+/**
+ * The header's "Google Maps · Connected" pill. Lives outside the view
+ * container so it survives a view repaint — it reflects whether the active
+ * tab is on Google Maps right now, not whether a job is running (a job keeps
+ * running regardless of which tab you're looking at).
+ */
+function paintConnectionPill() {
+  const el = $('#conn-pill');
+  if (!el) return;
+  const on = !!(state.mapsDetect && state.mapsDetect.onMaps);
+  el.classList.toggle('on', on);
+  const txt = el.querySelector('.txt');
+  if (txt) txt.textContent = on ? 'Connected' : 'Google Maps';
+  el.title = on ? 'A Google Maps tab is active' : 'Open Google Maps to search directly from here';
 }
 
 /* ------------------------------- boot ----------------------------- */
@@ -260,6 +277,7 @@ function bindTabs() {
     if (tab) switchView(tab.dataset.view);
   });
   $('#btn-refresh').addEventListener('click', () => { reload(); reloadJobs(); refreshMapsDetect(); });
+  $('#btn-settings').addEventListener('click', () => switchView('settings'));
 }
 
 /** The worker bumps `aq.tick` after any state change; reload on that. */

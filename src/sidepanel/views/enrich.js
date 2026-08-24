@@ -5,7 +5,7 @@
  * collection, and neither counts a missing value as an error.
  */
 import { MSG, SOCIAL_KEYS } from '../../core/constants.js';
-import { esc, banner, onClick, empty, coverageRow } from '../ui.js';
+import { esc, banner, onClick, empty, coverageRow, stat } from '../ui.js';
 
 export function renderEnrich(state) {
   const records = state.records || [];
@@ -45,7 +45,13 @@ export function renderEnrich(state) {
   </div>
 
   <div class="card">
-    <h2>2 · Website enrichment <span class="count">${withSite} with a website</span></h2>
+    <h2>2 · Enrich missing data <span class="count">${withSite} with a website</span></h2>
+    <p class="hint">Improve your collected leads by finding missing public information — email addresses and social profiles, read only from each business's own website.</p>
+    <div class="stats" style="margin:10px 0">
+      ${stat(`${q.fields.email ? q.fields.email.found : 0}/${records.length}`, 'Email', 'accent')}
+      ${stat(`${q.fields.social ? q.fields.social.found : 0}/${records.length}`, 'Social', 'accent')}
+      ${stat(`${q.fields.website ? q.fields.website.found : 0}/${records.length}`, 'Website', 'ok')}
+    </div>
     <label class="check"><input type="checkbox" data-enrich="email" ${e.email !== false ? 'checked' : ''}><span>Email addresses</span></label>
     <label class="check"><input type="checkbox" data-enrich="social" ${e.social !== false ? 'checked' : ''}><span>Social profiles (Facebook, Instagram, TikTok, LinkedIn, YouTube, X)</span></label>
     <div class="row" style="margin-top:6px">
@@ -60,9 +66,9 @@ export function renderEnrich(state) {
     ${state.job && /Enrich/i.test((state.job.progress && state.job.progress.note) || '')
     ? `<div class="bar indeterminate"><i></i></div>
        <p class="hint">${esc(state.job.progress.note)}</p>
-       <button class="danger block" data-act="enrich-stop">Stop Enrichment</button>`
-    : `<button class="primary lg block" data-act="enrich-start" ${state.busy || !withSite ? 'disabled' : ''}>
-         ${withSite ? `Enrich ${withSite} record(s)` : 'No websites to inspect'}
+       <button class="danger block" data-act="enrich-stop">STOP ENRICHMENT</button>`
+    : `<button class="primary cta block" data-act="enrich-start" ${state.busy || !withSite ? 'disabled' : ''}>
+         ${withSite ? `START ENRICHMENT — ${withSite} record(s)` : 'No websites to inspect'}
        </button>`}
     <p class="hint tiny" style="margin-top:8px">Homepage, then contact and about pages. Only addresses the business publishes itself are collected — nothing is guessed. Records with no website are marked <code>Skipped</code>, which is not an error.</p>
   </div>

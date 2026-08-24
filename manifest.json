@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Al-Aqsa Scraper",
-  "version": "4.1.0",
+  "version": "4.2.0",
   "description": "Professional Google Maps lead-generation scraper. One-screen collection, fast card-first scraping with no per-business tabs, optional missing-field-only detail resolution and enrichment, deduplication, scoring and export to CSV, Excel or Google Sheets.",
   "icons": {
     "16": "assets/icons/icon-16.png",
