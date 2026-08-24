@@ -14,7 +14,7 @@ import * as collector from './collector.js';
 import * as dom from './dom.js';
 import * as S from './selectors.js';
 import { parseCard } from './card-parser.js';
-import { readPlacePage } from './place-detail.js';
+import { fetchPlaceDetail } from './place-detail.js';
 
 const log = createLogger('content');
 
@@ -69,17 +69,22 @@ const handlers = {
   },
 
   /**
-   * Read the RENDERED place panel on this tab.
+   * Resolve Full Address / Website / Phone for ONE place, without opening a
+   * tab or navigating this one.
    *
-   * Sent by the detail resolver to one of its own background tabs. It is a
-   * pure read: it never scrolls, clicks or navigates, so it cannot disturb a
-   * collection running in another tab.
+   * Sent by the detail resolver in the background to whichever Maps tab is
+   * already open. This tab's own `fetch()` of the place URL is same-origin —
+   * it carries the user's Google session automatically — so the response is
+   * rich enough to parse directly. This never touches this tab's own DOM,
+   * URL or scroll position, so it cannot disturb a collection running here.
    */
   [MSG.DETAIL_EXTRACT]: async (payload) => {
-    const detail = await readPlacePage({
+    const url = payload && payload.url;
+    if (!url) return fail('No place URL supplied.');
+    const result = await fetchPlaceDetail(url, {
       timeoutMs: (payload && payload.timeoutMs) || 12000,
     });
-    return ok(detail);
+    return result.ok ? ok(result.data) : fail(result.error);
   },
 
   [MSG.COLLECT_PAUSE]: () => ok(collector.pause()),

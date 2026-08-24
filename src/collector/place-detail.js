@@ -1,18 +1,24 @@
 /**
- * Place detail extraction from the RENDERED Google Maps page.
+ * Place detail extraction — Full Address / Website / Phone for one record.
  *
  * ----------------------------------------------------------------------------
- * WHY THIS REPLACES THE v2 APPROACH
+ * WHY THIS DOES NOT OPEN A TAB
  * ----------------------------------------------------------------------------
- * v2 did `fetch(placeUrl)` from the content script and mined
- * APP_INITIALIZATION_STATE out of the returned HTML. A plain fetch of a Maps
- * place URL does not reliably return the same payload the rendered page has,
- * so the parser mostly failed — 51 results yielded 2 websites.
+ * Earlier versions filled these fields by opening a real background tab per
+ * record, navigating it to the place page, and reading the rendered DOM. That
+ * works, but it means dozens to hundreds of tab creations/navigations for one
+ * search — heavy on Chrome, slow, and the single biggest cause of collection
+ * feeling sluggish.
  *
- * v3 reads the detail panel Maps actually renders. That is the authoritative
- * source, it is what the user sees, and its hooks (`data-item-id`) are the most
- * durable thing Maps exposes. The embedded payload is kept only as a LAST
- * resort, and every value it produces is validated before use.
+ * A same-origin `fetch()` of the place URL, issued from the Maps content
+ * script (not the background — a background-worker fetch to google.com is a
+ * different, cookie-isolated context and does not reliably return the same
+ * response), returns a response that already contains almost everything the
+ * rendered page would show: either the same `data-item-id="address"` /
+ * `data-item-id="authority"` / `data-item-id^="phone:tel:"` markup the live
+ * page uses, or — when it doesn't — the same embedded JSON payload
+ * `detail-parser.js` already knows how to mine. No navigation, no paint, no
+ * new tab.
  *
  * Layering, per field:
  *     data-item-id  ->  aria-label  ->  semantic row  ->  href  ->  payload
@@ -22,8 +28,7 @@
  * as a technical error.
  */
 import * as S from './selectors.js';
-import { queryFirst, text, attr, waitFor } from './dom.js';
-import { sleep } from '../core/safe.js';
+import { queryFirst, text, attr } from './dom.js';
 import * as V from './validators.js';
 import { splitAddress, isCompleteAddress, tidyAddress, composeFull } from './address.js';
 import { parsePlaceDetail as parsePayload, extractPlaceJson } from './detail-parser.js';
@@ -39,32 +44,8 @@ function stripLabel(value) {
 }
 
 /* ==================================================================== *
- * Panel readiness
- * ==================================================================== */
-
-/**
- * Wait until the place panel has actually rendered its detail rows.
- * Resolves false on timeout rather than throwing.
- */
-export async function waitForPlacePanel(timeoutMs = 12000) {
-  const title = await waitFor(S.DETAIL_TITLE, timeoutMs);
-  if (!title) return false;
-
-  // The title can paint before the address/phone/website rows exist.
-  const deadline = Date.now() + Math.max(2000, timeoutMs / 2);
-  while (Date.now() < deadline) {
-    if (queryFirst(S.DETAIL_ADDRESS) || queryFirst(S.DETAIL_PHONE) || queryFirst(S.DETAIL_WEBSITE)) {
-      await sleep(150);          // let the remaining rows settle
-      return true;
-    }
-    await sleep(200);
-  }
-  // A place with genuinely no detail rows (rare) still counts as rendered.
-  return true;
-}
-
-/* ==================================================================== *
- * Field extractors — each returns { value, via }
+ * Field extractors — each takes the document to read (the live page or a
+ * DOMParser-parsed fetch response) and returns { value, via }.
  * ==================================================================== */
 
 /**
@@ -72,8 +53,8 @@ export async function waitForPlacePanel(timeoutMs = 12000) {
  *   button[data-item-id="address"]  ->  aria-label containing "Address"
  *   ->  semantic detail row  ->  payload
  */
-export function extractAddress() {
-  const el = queryFirst(S.DETAIL_ADDRESS);
+export function extractAddress(root) {
+  const el = queryFirst(S.DETAIL_ADDRESS, root);
   if (el) {
     const aria = stripLabel(attr(el, 'aria-label'));
     if (V.isPlausibleAddressLine(aria)) return { value: tidyAddress(aria), via: 'dom:data-item-id=address[aria-label]' };
@@ -83,14 +64,14 @@ export function extractAddress() {
   }
 
   // Any button whose ARIA label announces itself as an address.
-  const labelled = findByAriaPrefix(['address', 'adresse', 'dirección', 'indirizzo']);
+  const labelled = findByAriaPrefix(['address', 'adresse', 'dirección', 'indirizzo'], root);
   if (labelled) {
     const v = stripLabel(attr(labelled, 'aria-label'));
     if (V.isPlausibleAddressLine(v)) return { value: tidyAddress(v), via: 'dom:aria-label' };
   }
 
   // Semantic row: an info row whose icon/tooltip identifies it as the address.
-  const row = queryFirst(['button[data-tooltip="Copy address"]', '[data-tooltip="Copy address"]']);
+  const row = queryFirst(['button[data-tooltip="Copy address"]', '[data-tooltip="Copy address"]'], root);
   if (row) {
     const v = stripLabel(text(row));
     if (V.isPlausibleAddressLine(v)) return { value: tidyAddress(v), via: 'dom:data-tooltip' };
@@ -105,8 +86,8 @@ export function extractAddress() {
  * Google-owned, schema.org and Maps-internal URLs are rejected outright, so
  * `http://schema.org/Place` can never reach the Website column.
  */
-export function extractWebsite() {
-  const el = queryFirst(S.DETAIL_WEBSITE);
+export function extractWebsite(root) {
+  const el = queryFirst(S.DETAIL_WEBSITE, root);
   if (el) {
     const href = el.href || attr(el, 'href');
     if (V.isPlausibleWebsite(href)) return { value: href, via: 'dom:data-item-id=authority[href]' };
@@ -118,7 +99,7 @@ export function extractWebsite() {
     if (V.isPlausibleWebsite(inner)) return { value: normaliseBareHost(inner), via: 'dom:data-item-id=authority[text]' };
   }
 
-  const labelled = findByAriaPrefix(['website', 'site web', 'sitio web', 'sito web', 'webseite']);
+  const labelled = findByAriaPrefix(['website', 'site web', 'sitio web', 'sito web', 'webseite'], root);
   if (labelled) {
     const href = labelled.href || attr(labelled, 'href');
     if (V.isPlausibleWebsite(href)) return { value: href, via: 'dom:aria-label[href]' };
@@ -139,8 +120,8 @@ function normaliseBareHost(value) {
  * PHONE
  *   data-item-id="phone:tel:…"  ->  tel: href  ->  aria-label
  */
-export function extractPhone() {
-  const el = queryFirst(S.DETAIL_PHONE);
+export function extractPhone(root) {
+  const el = queryFirst(S.DETAIL_PHONE, root);
   if (el) {
     const itemId = attr(el, 'data-item-id');
     const fromId = itemId.replace(/^phone:tel:/, '');
@@ -155,13 +136,13 @@ export function extractPhone() {
   }
 
   // A tel: link anywhere in the panel.
-  const tel = queryFirst(['a[href^="tel:"]']);
+  const tel = queryFirst(['a[href^="tel:"]'], root);
   if (tel) {
-    const v = decodeURIComponent((tel.href || '').replace(/^tel:/, ''));
+    const v = decodeURIComponent((tel.href || attr(tel, 'href') || '').replace(/^tel:/, ''));
     if (V.isPlausiblePhone(v)) return { value: v, via: 'dom:tel-href' };
   }
 
-  const labelled = findByAriaPrefix(['phone', 'telephone', 'téléphone', 'teléfono', 'telefone']);
+  const labelled = findByAriaPrefix(['phone', 'telephone', 'téléphone', 'teléfono', 'telefone'], root);
   if (labelled) {
     const v = stripLabel(attr(labelled, 'aria-label'));
     if (V.isPlausiblePhone(v)) return { value: v, via: 'dom:aria-label' };
@@ -171,10 +152,10 @@ export function extractPhone() {
 }
 
 /** Any element whose aria-label starts with one of these field names. */
-function findByAriaPrefix(prefixes) {
+function findByAriaPrefix(prefixes, root) {
   let nodes;
   try {
-    nodes = document.querySelectorAll('[aria-label]');
+    nodes = (root || document).querySelectorAll('[aria-label]');
   } catch {
     return null;
   }
@@ -186,15 +167,15 @@ function findByAriaPrefix(prefixes) {
 }
 
 /** Title, category, rating and review count from the panel header. */
-export function extractHeader() {
+export function extractHeader(root) {
   const out = { businessName: '', category: '', rating: '', reviewCount: '' };
 
-  out.businessName = text(queryFirst(S.DETAIL_TITLE));
+  out.businessName = text(queryFirst(S.DETAIL_TITLE, root));
 
-  const cat = queryFirst(S.DETAIL_CATEGORY);
+  const cat = queryFirst(S.DETAIL_CATEGORY, root);
   if (cat) out.category = text(cat);
 
-  const star = queryFirst(['span[role="img"][aria-label*="star"]', 'span[aria-label*="star"]']);
+  const star = queryFirst(['span[role="img"][aria-label*="star"]', 'span[aria-label*="star"]'], root);
   if (star) {
     const aria = attr(star, 'aria-label');
     const m = aria.match(/(\d{1,2}(?:[.,]\d{1,2})?)/);
@@ -204,7 +185,7 @@ export function extractHeader() {
     }
   }
 
-  const reviews = queryFirst(['button[aria-label*="review"]', 'span[aria-label*="review"]', 'button[jsaction*="reviewChart"]']);
+  const reviews = queryFirst(['button[aria-label*="review"]', 'span[aria-label*="review"]', 'button[jsaction*="reviewChart"]'], root);
   if (reviews) {
     const digits = (attr(reviews, 'aria-label') || text(reviews)).replace(/[^\d]/g, '');
     if (digits) out.reviewCount = String(parseInt(digits, 10));
@@ -212,10 +193,10 @@ export function extractHeader() {
   return out;
 }
 
-/** Coordinates from the current URL. Blank when Maps does not expose them. */
-export function extractGeo(href = (typeof location !== 'undefined' ? location.href : '')) {
+/** Coordinates from a Maps place URL. Blank when the URL does not expose them. */
+export function extractGeo(href) {
   const out = { latitude: '', longitude: '' };
-  const m = String(href).match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/) || String(href).match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+  const m = String(href || '').match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/) || String(href || '').match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
   if (m) {
     if (V.isPlausibleLat(m[1])) out.latitude = m[1];
     if (V.isPlausibleLng(m[2])) out.longitude = m[2];
@@ -224,25 +205,20 @@ export function extractGeo(href = (typeof location !== 'undefined' ? location.hr
 }
 
 /* ==================================================================== *
- * Top level
+ * Assembly — shared by the live page (Diagnostics probe) and the fetched
+ * response (detail resolution). Pure: takes a document-like root, returns
+ * the detail object. No network, no waiting.
  * ==================================================================== */
 
-/**
- * Read everything the rendered place page exposes.
- * Always resolves. Unresolved fields are '' with an explicit status.
- */
-export async function readPlacePage(opts = {}) {
-  const { timeoutMs = 12000, allowPayloadFallback = true } = opts;
-
-  const rendered = await waitForPlacePanel(timeoutMs);
-
+/** Read everything a place document (live or fetched-and-parsed) exposes. */
+export function extractFromDocument(root, url) {
   const via = {};
-  const header = extractHeader();
+  const header = extractHeader(root);
 
-  const addr = extractAddress();
-  const site = extractWebsite();
-  const phone = extractPhone();
-  const geo = extractGeo();
+  const addr = extractAddress(root);
+  const site = extractWebsite(root);
+  const phone = extractPhone(root);
+  const geo = extractGeo(url);
 
   via.address = addr.via;
   via.website = site.via;
@@ -263,30 +239,6 @@ export async function readPlacePage(opts = {}) {
     }
   }
 
-  /* ---- last resort: the embedded payload, fully validated ---- */
-  let website = site.value;
-  let phoneValue = phone.value;
-
-  if (allowPayloadFallback && (!fullAddress || !website || !phoneValue)) {
-    const payload = readEmbeddedPayload();
-    if (payload) {
-      if (!fullAddress && payload.fullAddress && isCompleteAddress(payload.fullAddress)) {
-        fullAddress = tidyAddress(payload.fullAddress);
-        components = splitAddress(fullAddress);
-        via.fullAddress = `payload:${payload.via.fullAddress}`;
-      }
-      if (!website && V.isPlausibleWebsite(payload.website)) {
-        website = payload.website;
-        via.website = `payload:${payload.via.website}`;
-      }
-      if (!phoneValue && V.isPlausiblePhone(payload.phone)) {
-        phoneValue = payload.phone;
-        via.phone = `payload:${payload.via.phone}`;
-      }
-      if (!geo.latitude && payload.latitude) { geo.latitude = payload.latitude; geo.longitude = payload.longitude; }
-    }
-  }
-
   // If the panel gave components but no single complete string, build one.
   if (!fullAddress && components.street && (components.city || components.postalCode)) {
     const built = composeFull(components.street, components);
@@ -294,7 +246,6 @@ export async function readPlacePage(opts = {}) {
   }
 
   return {
-    rendered,
     businessName: header.businessName,
     category: header.category,
     rating: header.rating,
@@ -307,27 +258,122 @@ export async function readPlacePage(opts = {}) {
     postalCode: components.postalCode,
     country: components.country,
 
-    website,
-    phone: phoneValue,
+    website: site.value,
+    phone: phone.value,
     latitude: geo.latitude,
     longitude: geo.longitude,
-
-    fullAddressStatus: fullAddress ? FIELD_STATUS.FOUND : FIELD_STATUS.NOT_FOUND,
-    websiteStatus: website ? FIELD_STATUS.FOUND : FIELD_STATUS.NOT_FOUND,
-    phoneStatus: phoneValue ? FIELD_STATUS.FOUND : FIELD_STATUS.NOT_FOUND,
 
     via,
   };
 }
 
-/** Mine the page's own embedded payload, if this rollout still ships one. */
-function readEmbeddedPayload() {
+/**
+ * Fill any gap `extractFromDocument` left, from the page's embedded JSON
+ * payload — a last resort, used only for what's still missing, and every
+ * value is validated before use exactly like the DOM path.
+ */
+export function mergeEmbeddedPayload(detail, html) {
+  if (!html || (detail.fullAddress && detail.website && detail.phone)) return detail;
+
+  let payload = null;
   try {
-    const html = document.documentElement ? document.documentElement.innerHTML : '';
-    if (!html || !extractPlaceJson(html)) return null;
-    const parsed = parsePayload(html);
-    return parsed && parsed.ok ? parsed : null;
-  } catch {
-    return null;
+    if (extractPlaceJson(html)) payload = parsePayload(html);
+  } catch { /* a malformed response must not break this record */ }
+  if (!payload || !payload.ok) return detail;
+
+  const out = { ...detail, via: { ...detail.via } };
+
+  if (!out.fullAddress && payload.fullAddress && isCompleteAddress(payload.fullAddress)) {
+    out.fullAddress = tidyAddress(payload.fullAddress);
+    const c = splitAddress(out.fullAddress);
+    out.city = out.city || c.city;
+    out.state = out.state || c.state;
+    out.postalCode = out.postalCode || c.postalCode;
+    out.country = out.country || c.country;
+    out.via.fullAddress = `payload:${payload.via.fullAddress}`;
   }
+  if (!out.website && V.isPlausibleWebsite(payload.website)) {
+    out.website = payload.website;
+    out.via.website = `payload:${payload.via.website}`;
+  }
+  if (!out.phone && V.isPlausiblePhone(payload.phone)) {
+    out.phone = payload.phone;
+    out.via.phone = `payload:${payload.via.phone}`;
+  }
+  if (!out.latitude && payload.latitude) { out.latitude = payload.latitude; out.longitude = payload.longitude; }
+
+  return out;
+}
+
+/** Attach the per-field statuses `applyDetail()` (detail-resolver.js) expects. */
+function withStatuses(detail) {
+  return {
+    ...detail,
+    fullAddressStatus: detail.fullAddress ? FIELD_STATUS.FOUND : FIELD_STATUS.NOT_FOUND,
+    websiteStatus: detail.website ? FIELD_STATUS.FOUND : FIELD_STATUS.NOT_FOUND,
+    phoneStatus: detail.phone ? FIELD_STATUS.FOUND : FIELD_STATUS.NOT_FOUND,
+  };
+}
+
+/* ==================================================================== *
+ * Network entry point — same-origin fetch, no tab.
+ *
+ * Must run from the Maps content script, not the background service worker:
+ * a content script injected on google.com issues a same-origin request that
+ * automatically carries the user's session, which is what makes the response
+ * rich enough to parse. A background-worker fetch to the same URL is a
+ * different, cookie-isolated context and does not reliably return the same
+ * thing (this is what earlier versions of this codebase hit, and why detail
+ * resolution used to open a real tab instead).
+ * ==================================================================== */
+
+/** `hl=en` keeps ARIA labels and any embedded payload text predictable. */
+export function placePageUrl(mapsUrl) {
+  try {
+    const u = new URL(mapsUrl);
+    u.searchParams.set('hl', 'en');
+    return u.toString();
+  } catch {
+    return mapsUrl;
+  }
+}
+
+async function fetchWithTimeout(url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { credentials: 'include', signal: controller.signal });
+    if (!res.ok) return { ok: false, text: '', error: `HTTP ${res.status}` };
+    return { ok: true, text: await res.text(), error: null };
+  } catch (err) {
+    const message = err && err.name === 'AbortError' ? `timed out after ${timeoutMs}ms` : String(err && err.message || err);
+    return { ok: false, text: '', error: message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Fetch one place's page and extract Full Address / Website / Phone (plus
+ * whatever else is available) from the response — no navigation, no tab.
+ * Always resolves. Unresolved fields are '' with an explicit status.
+ */
+export async function fetchPlaceDetail(mapsUrl, opts = {}) {
+  const timeoutMs = opts.timeoutMs || 12000;
+  const url = placePageUrl(mapsUrl);
+
+  const res = await fetchWithTimeout(url, timeoutMs);
+  if (!res.ok) return { ok: false, data: null, error: res.error };
+
+  let parsed;
+  try {
+    const doc = new DOMParser().parseFromString(res.text, 'text/html');
+    parsed = extractFromDocument(doc, url);
+  } catch (err) {
+    // A response that fails to parse as HTML still has embedded JSON to try.
+    parsed = { businessName: '', category: '', rating: '', reviewCount: '', address: '', fullAddress: '', city: '', state: '', postalCode: '', country: '', website: '', phone: '', latitude: '', longitude: '', via: { parseError: String(err && err.message) } };
+  }
+
+  const merged = mergeEmbeddedPayload(parsed, res.text);
+  return { ok: true, data: withStatuses(merged), error: null };
 }

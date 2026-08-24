@@ -13,7 +13,7 @@ export function renderSettings(state) {
     <h2>Collection</h2>
     <div class="row">
       <label class="field grow"><span>Detail concurrency</span>
-        <input type="number" min="1" max="12" data-set="detailConcurrency" value="${Number(s.detailConcurrency) || 4}"></label>
+        <input type="number" min="1" max="12" data-set="detailConcurrency" value="${Number(s.detailConcurrency) || 5}"></label>
       <label class="field grow"><span>Detail timeout (ms)</span>
         <input type="number" min="3000" max="60000" step="1000" data-set="detailTimeoutMs" value="${Number(s.detailTimeoutMs) || 12000}"></label>
     </div>
@@ -35,8 +35,8 @@ export function renderSettings(state) {
       <span>Resolve place details automatically after collection</span>
     </label>
     <div class="row" style="margin-top:6px">
-      <label class="field grow"><span>Background tabs</span>
-        <input type="number" min="1" max="4" data-set="detailConcurrency" value="${Number(s.detailConcurrency) || 2}"></label>
+      <label class="field grow"><span>Concurrent fetches</span>
+        <input type="number" min="1" max="8" data-set="detailConcurrency" value="${Number(s.detailConcurrency) || 5}"></label>
       <label class="field grow"><span>Timeout (ms)</span>
         <input type="number" min="5000" max="60000" step="1000" data-set="detailTimeoutMs" value="${Number(s.detailTimeoutMs) || 15000}"></label>
     </div>
@@ -46,7 +46,7 @@ export function renderSettings(state) {
       <label class="field grow"><span>Save every N records</span>
         <input type="number" min="1" max="100" data-set="detailBatchSize" value="${Number(s.detailBatchSize) || 10}"></label>
     </div>
-    <p class="hint tiny">Details are read from each place's rendered Maps panel using a small pool of background tabs. There is <strong>no record cap</strong> — every record is processed. More tabs is faster but heavier on your machine.</p>
+    <p class="hint tiny">Most records already have Website and Phone straight off the results card — this stage only runs for what's still missing. It reads them via concurrent same-origin fetches sent through your open Google Maps tab, never a new tab. There is <strong>no record cap</strong> — every missing field is processed.</p>
   </div>
 
   <div class="card">

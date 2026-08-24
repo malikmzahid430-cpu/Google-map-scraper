@@ -4,14 +4,19 @@ Manifest V3 · no build step · zero runtime dependencies
 
 ---
 
-## 0. v4 — one screen, not two mechanisms
+## 0. v4 — two audits, two targeted changes
 
-Everything from section 1 onward (the collector rewrite, detail resolution,
-the error model, the heartbeat, jobs/queue/projects) is the v3 reliability
-rebuild and is **unchanged in v4** — it was audited against the real code
-(not just this document) before v4 touched anything, and the whole test
-suite (148 tests) plus `verify-isolation.mjs` and `verify-build.mjs` passed
-before and after.
+Sections 1 onward are the v3 reliability rebuild: the collector rewrite,
+detail resolution's original design, the error model, the heartbeat,
+jobs/queue/projects. **0.1** replaced the UI on top of that engine. **0.2**
+replaced one specific mechanism inside it — how detail resolution actually
+fetches data — after a second audit found it was reintroducing the exact
+"heavy, tab-based" problem class this codebase's own earlier versions had
+already been rewritten once to fix. Both changes were audited against the
+real code first, and the whole test suite (197 tests as of 0.2) plus
+`verify-isolation.mjs` and `verify-build.mjs` passed before and after each.
+
+### 0.1 — one screen, not two mechanisms
 
 What v3 got wrong was the **UI**, not the engine. `views/scrape.js` rendered
 two mechanisms that looked like one: a "Search" card whose What/Where boxes
@@ -50,6 +55,54 @@ Buttons: **START COLLECTING LEADS** / **PAUSE COLLECTION** / **STOP
 COLLECTION** / **ENRICH DATA**. A job that errored after collecting records
 reads as **Partial — N saved**, not a bare "Error", both on Home and in the
 Jobs list.
+
+### 0.2 — card-first collection: no per-business tabs
+
+The v3 rewrite (section 1 below) fixed *whether* every result got collected.
+It did not fix *how heavy* getting the details for each one was: for
+Standard/Advanced mode, `detail-resolver.js` opened a pool of 2–4 real
+background tabs and **navigated one to every record's place page**,
+sequentially through that pool, automatically right after every collection.
+Reading the rendered panel this way is reliable, but dozens to hundreds of
+tab creations/navigations per search is heavy on Chrome and slow — the
+"opens many tabs, makes Chrome slow" complaint. This audit compared the
+codebase against a working prior version of this same product and adopted
+its faster approach where it held up, rather than guessing.
+
+**Card-first.** `card-parser.js` already read Business Name, Category,
+Rating, Reviews and the street Address straight off the results card with
+zero network cost. It's extended to also read **Website** and **Phone**
+this way, via `CARD_WEBSITE`/`CARD_PHONE` in `selectors.js` — Google
+frequently renders these as quick-action buttons directly on the card, not
+only inside the place detail panel. When they're there, the record is
+complete after Phase 1 alone. When they're not, the field is simply blank
+until (optional) detail resolution — nothing is invented either way.
+
+**No tabs for what's left.** For whatever's still missing — in practice this
+is almost always Full Address, since Maps' card never shows a complete
+postal address — `detail-resolver.js` no longer opens anything. It asks the
+Maps tab's *own* content script to `fetch()` the place page and parse the
+response (`place-detail.js:fetchPlaceDetail`). Bounded concurrency
+(`core/safe.js:mapLimit`, default 5) governs how many of these run at once,
+the same primitive `enrich-manager.js` already used for website fetches —
+no tab pool, no per-record tab lifecycle, and `router.js` never calls
+`chrome.tabs.create` for this.
+
+This is not the same fetch that failed in row 2 of the table below. That was
+a background-service-worker fetch, an unrelated, cookie-isolated context, at
+fixed and undocumented JSON array indices with no validation. This fetch
+runs from the content script already injected on `google.com` — a
+same-origin request that carries the user's session automatically — and its
+parser (`extractFromDocument`) reads the same `data-item-id` attributes the
+rendered page exposes, falling back to `detail-parser.js`'s existing
+candidate-path-plus-validator JSON miner (unchanged) only for what the DOM
+didn't have. `resolveAll()` still only processes records missing something,
+same as before, and applies whatever it finds without ever overwriting a
+value Phase 1 already found.
+
+`readPlacePage()`/`waitForPlacePanel()` (the live-tab-reading path) and the
+whole `TabPool`/`navigate()` machinery are gone — superseded, not left
+behind as dead code alongside the replacement.
 
 ---
 
@@ -120,28 +173,41 @@ Measured against a virtualized harness (`tools/harness/mini-dom.mjs`):
 
 ---
 
-## 3. Detail resolution, rewritten
+## 3. Detail resolution — card first, then a same-origin fetch, never a tab
 
-The authoritative source for Full Address, Website and Phone is **the panel Maps
-renders** — it is what you see on screen, and its `data-item-id` hooks are the
-most durable thing Maps exposes.
+Website and Phone are read straight off the **results card** during
+collection whenever Google renders them there (`card-parser.js`) — no
+network cost, no separate stage. What's left after that — in practice,
+almost always Full Address, which Maps' card never shows in full — is
+resolved by asking the Maps tab's own content script to fetch the place page
+and read the response; its `data-item-id` hooks are the most durable thing
+Maps exposes, whether read from a live page or a fetched one.
 
 ```
   ┌── background service worker ──────────────────────┐
-  │  TabPool (default 2 background tabs, reused)      │
-  │      ↓ navigate to place URL + hl=en              │
-  │  content script: readPlacePage()                  │
-  │      data-item-id → aria-label → semantic row     │
-  │      → href → embedded payload (validated)        │
-  │      ↓                                            │
-  │  applyDetail() → record + per-field status        │
+  │  resolveAll(): only records missing something     │
+  │      ↓ sendMessage(mapsTabId, {url})               │
+  │  the SAME Maps tab's content script:               │
+  │      fetch(placeUrl)  ← same-origin, cookies on    │
+  │      ↓                                              │
+  │  place-detail.js: extractFromDocument()             │
+  │      data-item-id → aria-label → semantic row      │
+  │      → href → embedded payload (validated)          │
+  │      ↓                                              │
+  │  applyDetail() → record + per-field status          │
   └───────────────────────────────────────────────────┘
 ```
 
-- Your Maps tab is never touched.
-- It does not matter whether the feed still holds a card for that place.
+- **No tab is opened, ever.** `mapLimit` (default 5 concurrent) bounds how
+  many of these fetches run at once inside the one Maps tab already open —
+  the same primitive `enrich-manager.js` uses for website fetches.
+- Only records still missing Full Address, Website or Phone are processed at
+  all; a record Phase 1 already completed is never touched again.
 - **No cap.** Throughput is governed by concurrency, timeout, retries and batch
   size; every record is either resolved or given an explicit status.
+- If no Google Maps tab is open when this runs, nothing is silently guessed —
+  the affected records are marked `Failed` with a technical error explaining
+  why, exactly as an unreachable tab would have been reported before.
 - Runs *after* collection has finished and been saved, so it cannot affect the
   collection result.
 
@@ -254,6 +320,10 @@ without touching the others.
 - **Full Address country** is appended only when the panel or payload carries it.
 - **Email** is read only from the business's own public website.
 - **Google Sheets** is inert until you supply your own OAuth client ID.
-- Detail resolution costs roughly 1–3 seconds per record. 51 records with 2 tabs
-  is about 40–70 seconds. That is the price of reading the rendered panel
-  instead of guessing from an HTTP response.
+- Detail resolution needs a Google Maps tab open to fetch through — if none
+  is open when it runs, the affected records are marked `Failed` rather than
+  silently guessed, and it can be retried once a Maps tab is open again.
+- Website/Phone straight off the results card depend on Google actually
+  rendering those quick-action buttons there, which isn't universal across
+  every Maps rollout — when absent, the field is simply blank after Phase 1
+  and picked up by detail resolution instead, same as before.

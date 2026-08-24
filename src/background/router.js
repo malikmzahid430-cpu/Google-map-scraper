@@ -246,6 +246,16 @@ async function startDetailResolution(jobId) {
   const records = await store.readRecords(id);
   if (!records.length) return { ok: false, error: 'Nothing to resolve.' };
 
+  // Missing-field only: many records already have everything from the results
+  // card (see card-parser.js), so skip the tab lookup entirely when there is
+  // genuinely nothing left to fill in.
+  const stillNeedsSomething = records.some((r) => !r.fullAddress || !r.website || !r.phone);
+  if (!stillNeedsSomething) return { ok: true, started: false, skipped: 'nothing missing' };
+
+  // No tab is opened for this — the Maps tab already open does the fetching
+  // itself, same-origin, from its own content script. See place-detail.js.
+  const tab = await findMapsTab();
+
   const cfg = await settings();
   await jobs.updateJob(id, { lastActivity: 'Resolving place details' });
 
@@ -265,7 +275,7 @@ async function startDetailResolution(jobId) {
       await store.writeRecords(id, partial);
       await notifyUi();
     },
-  });
+  }, tab && tab.id);
 
   run.then(async (result) => {
     await store.writeRecords(id, result.records);

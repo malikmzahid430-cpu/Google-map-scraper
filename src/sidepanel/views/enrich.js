@@ -10,7 +10,7 @@ import { esc, banner, onClick, empty, coverageRow } from '../ui.js';
 export function renderEnrich(state) {
   const records = state.records || [];
   if (!records.length) {
-    return `<div class="card">${empty('&#9737;', 'Nothing to enrich yet.<br>Collect some leads on the Scrape tab first.')}</div>`;
+    return `<div class="card">${empty('&#9737;', 'Nothing to enrich yet.<br>Collect some leads on the Home tab first.')}</div>`;
   }
 
   const q = state.quality();
@@ -28,7 +28,7 @@ export function renderEnrich(state) {
 
   <div class="card">
     <h2>1 · Place details <span class="count">from Google Maps</span></h2>
-    <p class="hint">Reads each business's Maps detail panel for <strong>full address</strong>, <strong>website</strong> and <strong>phone</strong>. This is the authoritative source — it is what you see on the page.</p>
+    <p class="hint">Most records already have <strong>website</strong> and <strong>phone</strong> straight off the results card — this only processes records still missing <strong>full address</strong>, website or phone, via concurrent fetches sent through your open Google Maps tab.</p>
     ${detailBusy
     ? `<div class="bar indeterminate"><i></i></div>
        <p class="hint">Resolving full address ${detail.done} / ${detail.total}</p>
@@ -41,7 +41,7 @@ export function renderEnrich(state) {
          ${needDetail ? `Resolve details for ${needDetail} record(s)` : 'All records already resolved'}
        </button>`}
     ${detail.ranAt ? `<p class="hint tiny" style="margin-top:8px">Last run: ${detail.resolved} resolved · ${detail.notFound} nothing published · ${detail.failed} failed.</p>` : ''}
-    <p class="hint tiny">There is no cap. Every record is processed in batches using background tabs; your Maps tab is never touched.</p>
+    <p class="hint tiny">There is no cap and no per-business tab — every missing field is fetched directly, in the background, while you keep browsing.</p>
   </div>
 
   <div class="card">

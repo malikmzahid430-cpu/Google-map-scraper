@@ -52,6 +52,7 @@ globalThis.fetch = async () => ({ text: async () => '' });
 const collector = await import('../src/collector/collector.js');
 const cardParser = await import('../src/collector/card-parser.js');
 const detailParser = await import('../src/collector/detail-parser.js');
+const placeDetail = await import('../src/collector/place-detail.js');
 const validators = await import('../src/collector/validators.js');
 const address = await import('../src/collector/address.js');
 const quality = await import('../src/core/quality.js');
@@ -187,6 +188,125 @@ group('TEST 6 & 7 - Website and phone, and what a blank means');
   check('every status has a plain-English explanation',
     ['Found', 'Not Found', 'Not Requested', 'Pending', 'Failed']
       .every((s) => quality.explainStatus(s, 'Website').length > 10));
+}
+
+/* ================================================================== */
+group('Website/phone read directly off the results card — no tab, no fetch');
+
+{
+  const { makeCard } = await import('./harness/mini-dom.mjs');
+
+  const withBoth = makeCard({
+    name: 'Al-Aqsa Roofing', category: 'Roofing contractor', rating: '4.6', reviews: '37',
+    street: '6215-1 Wilson Blvd', website: 'https://alaqsaroofing.com', phone: '+1 904-516-4279',
+  });
+  check('website is read straight off the card', cardParser.extractCardWebsite(withBoth) === 'https://alaqsaroofing.com');
+  check('phone is read straight off the card', cardParser.extractCardPhone(withBoth) === '+1 904-516-4279');
+
+  const rec = cardParser.parseCard(withBoth, 1);
+  check('parseCard carries the card website through', rec.website === 'https://alaqsaroofing.com');
+  check('parseCard carries the card phone through', rec.phone === '+1 904-516-4279');
+
+  const neither = makeCard({
+    name: 'No Site Roofing', category: 'Roofing contractor', rating: '4.2', reviews: '9', street: '1 Elm St',
+  });
+  check('no website on the card yields blank, not an error', cardParser.extractCardWebsite(neither) === '');
+  check('no phone on the card yields blank, not an error', cardParser.extractCardPhone(neither) === '');
+  const rec2 = cardParser.parseCard(neither, 2);
+  check('a card without these fields still parses everything else',
+    rec2.businessName === 'No Site Roofing' && rec2.website === '' && rec2.phone === '');
+
+  // A card cannot expose a Google/schema.org URL as the "website" — same
+  // validator as detail resolution, applied at card level.
+  const { El } = await import('./harness/mini-dom.mjs');
+  const badSite = makeCard({ name: 'Bad Site Co', category: 'Roofer', rating: '4.0', reviews: '3', street: '2 Oak St' });
+  badSite.append(new El('a', { 'data-item-id': 'authority', href: 'https://schema.org/Place' }));
+  check('schema.org on the card is rejected as a website', cardParser.extractCardWebsite(badSite) === '');
+}
+
+/* ================================================================== */
+group('Place detail — same-origin fetch, no tab (extraction logic)');
+
+{
+  const { El } = await import('./harness/mini-dom.mjs');
+
+  // --- DOM extraction against a hand-built "detail panel" ---
+  const panel = new El('div', { role: 'main' });
+  panel.append(new El('h1', { class: 'DUwDvf' }).append('Al-Aqsa Roofing'));
+  panel.append(new El('button', { 'data-item-id': 'address' })
+    .append('6215-1 Wilson Blvd Building 1, Jacksonville, FL 32210, United States'));
+  panel.append(new El('a', { 'data-item-id': 'authority', href: 'https://alaqsaroofing.com' }));
+  panel.append(new El('button', { 'data-item-id': 'phone:tel:+19045164279' }));
+
+  const placeUrl = 'https://www.google.com/maps/place/Al-Aqsa+Roofing/@30.2419,-81.7412,17z/data=!4m6!3m5!1s0x1:0x2!8m2!3d30.2419!4d-81.7412';
+  const detail = placeDetail.extractFromDocument(panel, placeUrl);
+  check('business name comes from the panel header', detail.businessName === 'Al-Aqsa Roofing');
+  check('a complete address is read as Full Address, not just the street',
+    detail.fullAddress === '6215-1 Wilson Blvd Building 1, Jacksonville, FL 32210, United States', detail.fullAddress);
+  check('website comes from data-item-id="authority"', detail.website === 'https://alaqsaroofing.com');
+  check('phone comes from data-item-id="phone:tel:…"', detail.phone === '+19045164279');
+  check('coordinates come from the place URL', detail.latitude === '30.2419' && detail.longitude === '-81.7412');
+
+  // --- a bare street line must never be presented as Full Address ---
+  const streetOnly = new El('div', { role: 'main' });
+  streetOnly.append(new El('button', { 'data-item-id': 'address' }).append('6215-1 Wilson Blvd'));
+  const partial = placeDetail.extractFromDocument(streetOnly, '');
+  check('a street line alone leaves Full Address blank', partial.fullAddress === '');
+  check('but is still kept as Address', partial.address === '6215-1 Wilson Blvd');
+
+  // --- embedded JSON payload fills gaps, never overwrites what the DOM found ---
+  const json6 = new Array(200).fill(null);
+  json6[7] = ['https://payload-example.com'];
+  json6[178] = [['+1 904 555 0199']];
+  json6[18] = '99 Payload Ave, Testville, TS 99999, United States';
+  const json = new Array(7); json[6] = json6;
+  const html = ")]}'\n" + JSON.stringify(json);
+
+  const blank = { businessName: '', category: '', rating: '', reviewCount: '', address: '', fullAddress: '',
+    city: '', state: '', postalCode: '', country: '', website: '', phone: '', latitude: '', longitude: '', via: {} };
+  const filled = placeDetail.mergeEmbeddedPayload(blank, html);
+  check('payload fills website the DOM did not have', filled.website === 'https://payload-example.com');
+  check('payload fills phone the DOM did not have', filled.phone === '+1 904 555 0199');
+  check('payload fills Full Address the DOM did not have', filled.fullAddress === '99 Payload Ave, Testville, TS 99999, United States');
+
+  const partiallyFound = { ...blank, website: 'https://dom-found-this.com' };
+  const notOverwritten = placeDetail.mergeEmbeddedPayload(partiallyFound, html);
+  check('payload never overwrites a value the DOM already found', notOverwritten.website === 'https://dom-found-this.com');
+
+  // --- fetchPlaceDetail: the actual network entry point, wired end to end ---
+  class FakeDOMParser {
+    parseFromString() {
+      const root = new El('div', { role: 'main' });
+      root.append(new El('h1', { class: 'DUwDvf' }).append('Fetched Place'));
+      root.append(new El('button', { 'data-item-id': 'address' })
+        .append('1 Fetch St, City, ST 00000, United States'));
+      root.append(new El('a', { 'data-item-id': 'authority', href: 'https://fetched.com' }));
+      // deliberately no phone element here — it must come from the embedded payload below
+      return root;
+    }
+  }
+  const fetchJson6 = new Array(200).fill(null);
+  fetchJson6[178] = [['+1 555 000 2222']];
+  const fetchJson = new Array(7); fetchJson[6] = fetchJson6;
+  const fetchHtml = ")]}'\n" + JSON.stringify(fetchJson);
+
+  const priorDomParser = globalThis.DOMParser;
+  const priorFetch = globalThis.fetch;
+  globalThis.DOMParser = FakeDOMParser;
+  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => fetchHtml });
+
+  const fetched = await placeDetail.fetchPlaceDetail('https://www.google.com/maps/place/Fetched+Place', { timeoutMs: 500 });
+  check('fetchPlaceDetail resolves ok:true from a same-origin fetch', fetched.ok === true, JSON.stringify(fetched));
+  check('it reads what the DOM had', fetched.data.businessName === 'Fetched Place' && fetched.data.website === 'https://fetched.com');
+  check('it fills what only the embedded payload had', fetched.data.phone === '+1 555 000 2222');
+  check('a resolved field is marked Found', fetched.data.websiteStatus === 'Found' && fetched.data.phoneStatus === 'Found');
+
+  globalThis.fetch = async (url) => ({ ok: false, status: 0, text: async () => '' });
+  const failedFetch = await placeDetail.fetchPlaceDetail('https://www.google.com/maps/place/Unreachable', { timeoutMs: 500 });
+  check('a failed fetch reports ok:false with an error, not a thrown exception', failedFetch.ok === false && !!failedFetch.error);
+
+  globalThis.DOMParser = priorDomParser;
+  globalThis.fetch = priorFetch;
 }
 
 /* ================================================================== */
@@ -619,7 +739,7 @@ group('UI - every view renders in empty and populated states');
 }
 
 /* ================================================================== */
-group('Detail resolver — failure containment (v3.0.1 regressions)');
+group('Detail resolver — no tabs, fetch-based, failure containment');
 
 {
   const resolver = await import('../src/background/detail-resolver.js');
@@ -630,67 +750,235 @@ group('Detail resolver — failure containment (v3.0.1 regressions)');
     serial: i + 1, businessName: 'B' + i, mapsUrl: 'https://www.google.com/maps/place/B' + i,
   }));
 
-  // --- the browser refuses to open ANY tab ---
-  globalThis.chrome = {
-    tabs: {
-      create: async () => { throw new Error('Cannot create tab'); },
-      remove: async () => {},
-      update: async () => {},
-      sendMessage: async () => ({ ok: true, data: {} }),
-      onUpdated: { addListener() {}, removeListener() {} },
-    },
-  };
-  const noTabs = await resolver.resolveAll(makeRecords(5), { detailConcurrency: 2, detailTimeoutMs: 100 }, {});
-  check('a tab-create failure does not throw', !!noTabs && Array.isArray(noTabs.records));
-  check('records are marked Failed, never a fabricated "Not Found"',
-    noTabs.records.every((r) => r.fullAddressStatus === FS.FAILED),
-    JSON.stringify(noTabs.records.map((r) => r.fullAddressStatus)));
-  check('the inability to open a tab is reported as a technical error',
-    (noTabs.stats.technicalErrors || []).some((e) => e.category === 'communication'),
-    JSON.stringify(noTabs.stats.technicalErrors));
+  // A chrome mock with NO tabs.create at all. If detail resolution ever tried
+  // to open a tab, calling an undefined function would throw — this is a
+  // stronger guarantee than mocking create() and hoping nothing calls it.
+  let tabsCreateCalls = 0;
+  const noTabsCreateApi = () => { tabsCreateCalls += 1; throw new Error('detail resolution must never create a tab'); };
 
-  // --- one worker explodes mid-run, the other must finish its share ---
-  let created = 0;
-  const seenTabs = [];
+  // --- no Google Maps tab is open at all (tabId is null) ---
+  globalThis.chrome = { tabs: { sendMessage: async () => ({ ok: true, data: {} }), create: noTabsCreateApi } };
+  const noTab = await resolver.resolveAll(makeRecords(5), { detailConcurrency: 3, detailTimeoutMs: 100 }, {}, null);
+  check('resolving with no Maps tab does not throw', !!noTab && Array.isArray(noTab.records));
+  check('records are marked Failed, never a fabricated "Not Found"',
+    noTab.records.every((r) => r.fullAddressStatus === FS.FAILED),
+    JSON.stringify(noTab.records.map((r) => r.fullAddressStatus)));
+  check('having no Maps tab is reported as a technical error',
+    (noTab.stats.technicalErrors || []).some((e) => e.category === 'communication'),
+    JSON.stringify(noTab.stats.technicalErrors));
+  check('no tab was created while resolving with tabId=null', tabsCreateCalls === 0);
+
+  // --- a real tab id: some fetches fail, the rest must still finish ---
+  const sentTo = [];
   globalThis.chrome = {
     tabs: {
-      create: async () => { created += 1; const id = 500 + created; seenTabs.push(id); return { id }; },
-      remove: async () => {},
-      update: async (id) => { if (id === 501) throw new Error('tab exploded'); },
-      sendMessage: async () => ({
-        ok: true,
-        data: {
-          fullAddress: '1 Main St, Town, ST 11111, United States',
-          website: 'https://example.com', phone: '+1 904 555 0100',
-          address: '1 Main St', city: 'Town', state: 'ST', postalCode: '11111', country: 'United States',
-          via: {},
-        },
-      }),
-      onUpdated: {
-        addListener(fn) { this._fn = fn; setTimeout(() => { for (const t of seenTabs) fn(t, { status: 'complete' }); }, 5); },
-        removeListener() {},
+      create: noTabsCreateApi,
+      sendMessage: async (tabId, msg) => {
+        sentTo.push(tabId);
+        const url = msg && msg.payload && msg.payload.url;
+        if (url && url.includes('B1')) throw new Error('tab unreachable'); // one record's fetch explodes
+        return {
+          ok: true,
+          data: {
+            fullAddress: '1 Main St, Town, ST 11111, United States',
+            website: 'https://example.com', phone: '+1 904 555 0100',
+            fullAddressStatus: FS.FOUND, websiteStatus: FS.FOUND, phoneStatus: FS.FOUND,
+            address: '1 Main St', city: 'Town', state: 'ST', postalCode: '11111', country: 'United States',
+            via: {},
+          },
+        };
       },
     },
   };
   const partial = await resolver.resolveAll(makeRecords(6), {
-    detailConcurrency: 2, detailTimeoutMs: 400, detailRetries: 0, detailPaceMs: 1, detailSettleMs: 1,
-  }, {});
-  check('a failing worker does not abort the run', !!partial && partial.records.length === 6);
+    detailConcurrency: 2, detailTimeoutMs: 400, detailRetries: 0, detailPaceMs: 1,
+  }, {}, 777);
+  check('a failing record does not abort the run', !!partial && partial.records.length === 6);
+  check('every fetch was sent to the SAME tab — no tab was ever created', sentTo.every((id) => id === 777) && tabsCreateCalls === 0,
+    JSON.stringify({ sentTo, tabsCreateCalls }));
   const resolved = partial.records.filter((r) => r.fullAddress).length;
-  check('the healthy worker still resolved its share', resolved > 0, 'resolved ' + resolved + '/6');
+  check('the other records still resolved', resolved === 5, 'resolved ' + resolved + '/6');
+  const failedOne = partial.records.find((r) => r.mapsUrl.includes('B1'));
+  check('the one unreachable record is marked Failed, not silently dropped',
+    failedOne.fullAddressStatus === FS.FAILED, failedOne.fullAddressStatus);
   check('no record is left claiming Pending forever',
     partial.records.every((r) => r.fullAddressStatus !== FS.PENDING),
     JSON.stringify(partial.records.map((r) => r.fullAddressStatus)));
 
-  // --- our own tabs must be identifiable ---
-  check('detail tabs are released after the run', resolver.detailTabIds().length === 0,
+  // --- fields already present are never re-fetched ---
+  let fetchedFor = [];
+  globalThis.chrome = {
+    tabs: {
+      create: noTabsCreateApi,
+      sendMessage: async (tabId, msg) => {
+        fetchedFor.push(msg.payload.url);
+        return { ok: true, data: { fullAddress: '9 Pine Rd, Town, ST 22222, United States', website: '', phone: '', fullAddressStatus: FS.FOUND, websiteStatus: FS.NOT_FOUND, phoneStatus: FS.NOT_FOUND, via: {} } };
+      },
+    },
+  };
+  const mixed = [
+    { serial: 1, businessName: 'Complete', mapsUrl: 'https://www.google.com/maps/place/complete',
+      fullAddress: '1 Main St, Town, ST 11111, United States', website: 'https://complete.com', phone: '+1 555 0100' },
+    { serial: 2, businessName: 'Missing address', mapsUrl: 'https://www.google.com/maps/place/gap',
+      fullAddress: '', website: 'https://gap.com', phone: '+1 555 0101' },
+  ];
+  const res2 = await resolver.resolveAll(mixed, { detailConcurrency: 2, detailTimeoutMs: 200 }, {}, 777);
+  check('a fully-complete record is never sent for fetching', !fetchedFor.includes('https://www.google.com/maps/place/complete'));
+  check('only the record missing something is fetched',
+    fetchedFor.length === 1 && fetchedFor[0] === 'https://www.google.com/maps/place/gap', JSON.stringify(fetchedFor));
+  check('the already-complete record keeps its own values untouched',
+    res2.records[0].website === 'https://complete.com' && res2.records[0].phone === '+1 555 0100');
+
+  // --- kept for API compatibility with router.js's findMapsTab() ---
+  check('detailTabIds is permanently empty — this module opens no tabs', resolver.detailTabIds().length === 0,
     JSON.stringify(resolver.detailTabIds()));
-  check('isDetailTab reports false for an unknown tab', resolver.isDetailTab(999999) === false);
+  check('isDetailTab reports false for any tab', resolver.isDetailTab(999999) === false);
 
   const rsrc = fs.readFileSync(new URL('../src/background/router.js', import.meta.url), 'utf8');
-  check('findMapsTab excludes the resolver\'s own tabs', /isDetailTab/.test(rsrc.slice(rsrc.indexOf('async function findMapsTab'), rsrc.indexOf('async function activeJobId'))));
-  check('the queue hook ignores detail tabs',
+  check('findMapsTab still excludes the resolver\'s (permanently empty) own-tab set',
+    /isDetailTab/.test(rsrc.slice(rsrc.indexOf('async function findMapsTab'), rsrc.indexOf('async function activeJobId'))));
+  check('the queue hook still ignores detail tabs',
     /if \(detailResolver\.isDetailTab\(tabId\)\) return;/.test(rsrc));
+  check('startDetailResolution looks up the Maps tab before resolving',
+    /const tab = await findMapsTab\(\);/.test(rsrc));
+  check('resolveAll is called with the found tab\'s id, not a newly created tab',
+    /detailResolver\.resolveAll\(/.test(rsrc) && /\}, tab && tab\.id\);/.test(rsrc));
+
+  globalThis.chrome = undefined;
+}
+
+/* ================================================================== */
+group('End-to-end: 51 businesses, fast collection + missing-field-only detail resolution');
+
+{
+  // A live Chrome + live Google Maps run cannot happen in this sandboxed test
+  // environment. This exercises the real collector.js, card-parser.js,
+  // detail-resolver.js and place-detail.js against a realistic 51-card feed —
+  // the same dependency-free methodology the rest of this suite uses — and
+  // reports the metrics requested for the scraping-path change.
+  const resolver = await import('../src/background/detail-resolver.js');
+  const { makeCard, makeFeed, markEndOfList } = await import('./harness/mini-dom.mjs');
+
+  const TOTAL = 51;
+  const names = ['Roofing', 'Plumbing', 'Electric', 'HVAC', 'Landscaping', 'Painting', 'Flooring', 'Contracting'];
+  const cards = [];
+  const truth = []; // what each synthetic business "really" has, for grading
+
+  for (let i = 0; i < TOTAL; i++) {
+    const hasWebsite = i % 10 !== 3;              // 46/51 — most cards expose it
+    const hasPhone = i % 12 !== 5;                 // 47/51 — most cards expose it
+    const name = `${names[i % names.length]} Co ${i + 1}`;
+    const website = hasWebsite ? `https://business${i}.example.com` : '';
+    const phone = hasPhone ? `+1 904 555 ${String(1000 + i).slice(-4)}` : '';
+    cards.push(makeCard({
+      name, category: names[i % names.length], rating: (4 + (i % 10) / 10).toFixed(1),
+      reviews: String(5 + i * 3), street: `${100 + i} Test Ave`, website, phone,
+    }));
+    truth.push({ name, hasWebsite, hasPhone });
+  }
+
+  collector.reset();
+  document.body.children.length = 0;
+  const feed = makeFeed(cards);
+  markEndOfList(feed);
+  document.body.append(feed);
+
+  const t0 = Date.now();
+  const phase1 = await runCollector({ ...FAST, mode: 'standard', scrollDelayMs: 1, maxNoChangeAttempts: 3 }, 'e2e-51');
+  const phase1Ms = Date.now() - t0;
+
+  check('all 51 businesses collected in Phase 1', phase1.records.length === TOTAL, 'got ' + phase1.records.length);
+  const named = phase1.records.filter((r) => r.businessName).length;
+  const categorized = phase1.records.filter((r) => r.category).length;
+  const rated = phase1.records.filter((r) => r.rating).length;
+  const reviewed = phase1.records.filter((r) => r.reviewCount).length;
+  const addressed = phase1.records.filter((r) => r.address).length;
+  const sitedPhase1 = phase1.records.filter((r) => r.website).length;
+  const phonedPhase1 = phase1.records.filter((r) => r.phone).length;
+  const expectedSites = truth.filter((t) => t.hasWebsite).length;
+  const expectedPhones = truth.filter((t) => t.hasPhone).length;
+
+  check('business name found for every record', named === TOTAL, `${named}/${TOTAL}`);
+  check('category found for every record', categorized === TOTAL, `${categorized}/${TOTAL}`);
+  check('rating found for every record', rated === TOTAL, `${rated}/${TOTAL}`);
+  check('review count found for every record', reviewed === TOTAL, `${reviewed}/${TOTAL}`);
+  check('street address found for every record', addressed === TOTAL, `${addressed}/${TOTAL}`);
+  check('website found directly in Phase 1 matches what the cards exposed',
+    sitedPhase1 === expectedSites, `${sitedPhase1}/${TOTAL} (expected ${expectedSites})`);
+  check('phone found directly in Phase 1 matches what the cards exposed',
+    phonedPhase1 === expectedPhones, `${phonedPhase1}/${TOTAL} (expected ${expectedPhones})`);
+  check('full address is NOT invented in Phase 1 — Maps cards never show it',
+    phase1.records.every((r) => r.fullAddress === ''));
+  check('zero technical errors from a clean 51-card collection',
+    phase1.ended.counts.technicalErrors === 0, String(phase1.ended.counts.technicalErrors));
+
+  // --- Phase 2: only records still missing something (here: all 51, since
+  //     Full Address is never on the card — see the assertion above) ---
+  let tabsCreated = 0;
+  let phase2Fetches = 0;
+  const FAKE_TAB_ID = 4242;
+  globalThis.chrome = {
+    tabs: {
+      create: async () => { tabsCreated += 1; throw new Error('detail resolution must never open a tab'); },
+      sendMessage: async (tabId, msg) => {
+        phase2Fetches += 1;
+        if (tabId !== FAKE_TAB_ID) throw new Error('sent to the wrong tab: ' + tabId);
+        const url = msg.payload.url;
+        const idx = phase1.records.findIndex((r) => r.mapsUrl === url);
+        const t = truth[idx];
+        return {
+          ok: true,
+          data: {
+            fullAddress: `${100 + idx} Test Ave, Jacksonville, FL 32${String(200 + idx).slice(-3)}, United States`,
+            website: t.hasWebsite ? '' : `https://recovered${idx}.example.com`, // only fills what Phase 1 missed
+            phone: t.hasPhone ? '' : `+1 904 555 9${String(idx).padStart(3, '0')}`,
+            fullAddressStatus: 'Found', websiteStatus: t.hasWebsite ? 'Found' : 'Found', phoneStatus: t.hasPhone ? 'Found' : 'Found',
+            via: {},
+          },
+        };
+      },
+    },
+  };
+
+  const t1 = Date.now();
+  const resolved = await resolver.resolveAll(phase1.records, {
+    detailConcurrency: 5, detailTimeoutMs: 2000, detailRetries: 1, detailBatchSize: 10, detailPaceMs: 1,
+  }, {}, FAKE_TAB_ID);
+  const phase2Ms = Date.now() - t1;
+
+  const fullAddressFound = resolved.records.filter((r) => r.fullAddress).length;
+  const sitedAfter = resolved.records.filter((r) => r.website).length;
+  const phonedAfter = resolved.records.filter((r) => r.phone).length;
+
+  check('every record was saved (none dropped)', resolved.records.length === TOTAL, String(resolved.records.length));
+  check('Full Address recovered for all 51 via Phase 2', fullAddressFound === TOTAL, `${fullAddressFound}/${TOTAL}`);
+  check('website count after Phase 2 covers every record (card + recovered)', sitedAfter === TOTAL, `${sitedAfter}/${TOTAL}`);
+  check('phone count after Phase 2 covers every record (card + recovered)', phonedAfter === TOTAL, `${phonedAfter}/${TOTAL}`);
+  check('ZERO individual business tabs were opened', tabsCreated === 0, 'tabs opened: ' + tabsCreated);
+  check('Phase 2 made exactly one fetch per record needing something — not per missing field',
+    phase2Fetches === TOTAL, `${phase2Fetches} fetches for ${TOTAL} records`);
+  check('no technical errors from a clean Phase 2 run',
+    (resolved.stats.technicalErrors || []).length === 0, JSON.stringify(resolved.stats.technicalErrors));
+
+  console.log('\n  ' + '='.repeat(58));
+  console.log('  51-BUSINESS TEST REPORT (synthetic harness — see note above)');
+  console.log('  ' + '='.repeat(58));
+  console.log(`  Total businesses collected      : ${phase1.records.length}`);
+  console.log(`  Phase 1 collection time         : ${phase1Ms} ms`);
+  console.log(`  Business Name found             : ${named}/${TOTAL}`);
+  console.log(`  Category found                  : ${categorized}/${TOTAL}`);
+  console.log(`  Rating found                    : ${rated}/${TOTAL}`);
+  console.log(`  Reviews found                   : ${reviewed}/${TOTAL}`);
+  console.log(`  Address (street) found          : ${addressed}/${TOTAL}`);
+  console.log(`  Full Address found (after P2)   : ${fullAddressFound}/${TOTAL}`);
+  console.log(`  Website found in Phase 1 (card) : ${sitedPhase1}/${TOTAL}`);
+  console.log(`  Phone found in Phase 1 (card)   : ${phonedPhase1}/${TOTAL}`);
+  console.log(`  Phase 2 fetches performed       : ${phase2Fetches}`);
+  console.log(`  Phase 2 time                    : ${phase2Ms} ms`);
+  console.log(`  Individual business tabs opened : ${tabsCreated}`);
+  console.log(`  Technical errors (P1 + P2)      : ${phase1.ended.counts.technicalErrors + (resolved.stats.technicalErrors || []).length}`);
+  console.log(`  Records saved                   : ${resolved.records.length}`);
+  console.log('  ' + '='.repeat(58) + '\n');
 
   globalThis.chrome = undefined;
 }

@@ -8,12 +8,20 @@
  * over records already in storage, and can be paused or stopped without
  * touching a running collection.
  *
- * HOW IT WORKS
- *   A small pool of BACKGROUND tabs (default 2) is opened once and reused.
- *   Each tab is navigated to a place URL, the content script reads the
- *   RENDERED detail panel, and the tab moves on to the next record. The user's
- *   own Maps tab is never touched, and nothing depends on the feed still
- *   holding a card for that place.
+ * HOW IT WORKS — NO TABS
+ *   Every business is fast-pathed already if the results card exposed its
+ *   website/phone (see `card-parser.js`); only records still missing Full
+ *   Address, Website or Phone reach this stage at all. For those, this module
+ *   asks the Maps tab's own content script to `fetch()` the place page and
+ *   read the response — a same-origin request that carries the user's Google
+ *   session, so it returns a response rich enough to parse without ever
+ *   rendering it. See `src/collector/place-detail.js` for why that fetch has
+ *   to run from the content script and not here.
+ *
+ *   Nothing here opens, navigates or closes a browser tab. Bounded
+ *   concurrency (`mapLimit`) controls how many concurrent fetches run inside
+ *   that one content script, exactly the same way `enrich-manager.js` bounds
+ *   concurrent website fetches — no tab pool, no per-record tab lifecycle.
  *
  * WHY NOT A CAP
  *   v2 stopped after 40 records (`domFallbackCap`), silently abandoning the
@@ -22,18 +30,17 @@
  *   explicit status.
  */
 import { MSG, FIELD_STATUS, TECH_ERROR } from '../core/constants.js';
-import { sleep, safeCall } from '../core/safe.js';
+import { sleep, safeCall, mapLimit } from '../core/safe.js';
 import { createLogger } from '../core/logger.js';
 import * as diag from '../core/diagnostics.js';
 
 const log = createLogger('detail');
 
 /**
- * Tab ids this module currently owns.
- *
- * Detail tabs are real `google.com/maps/place/...` pages, so anything that
- * looks for "a Google Maps tab" would happily pick one of ours. `findMapsTab`
- * and the queue's tab-ready hook both consult this set to exclude them.
+ * Kept for API compatibility with `router.js`'s `findMapsTab()`, which
+ * excludes "our own" tabs from consideration. This module opens none, so the
+ * set is permanently empty — but the export stays so nothing upstream needs
+ * to change just because the mechanism underneath it did.
  */
 const ownedTabs = new Set();
 
@@ -80,101 +87,22 @@ async function waitWhilePaused() {
 }
 
 /* ==================================================================== *
- * Tab pool
- * ==================================================================== */
-
-class TabPool {
-  constructor(size) {
-    this.size = Math.max(1, Math.min(size || 2, 4));
-    this.tabs = [];
-  }
-
-  /**
-   * Open one background tab. Returns null instead of throwing — the browser can
-   * refuse (tab limits, policy), and a rejection here used to escape the worker
-   * and reject the whole Promise.all while other workers kept running against
-   * tabs that `finally` had already closed.
-   */
-  async acquire() {
-    if (this.tabs.length >= this.size) return null;
-    try {
-      const tab = await chrome.tabs.create({ url: 'about:blank', active: false });
-      if (!tab || tab.id == null) return null;
-      this.tabs.push(tab.id);
-      ownedTabs.add(tab.id);
-      return tab.id;
-    } catch (err) {
-      log.warn('could not open a detail tab', err);
-      return null;
-    }
-  }
-
-  async closeAll() {
-    for (const id of this.tabs) {
-      ownedTabs.delete(id);
-      try { await chrome.tabs.remove(id); } catch { /* already gone */ }
-    }
-    this.tabs = [];
-  }
-}
-
-/** Navigate a tab and wait for it to finish loading. Never throws. */
-async function navigate(tabId, url, timeoutMs) {
-  return await new Promise((resolve) => {
-    let settled = false;
-    const finish = (ok, error) => {
-      if (settled) return;
-      settled = true;
-      try { chrome.tabs.onUpdated.removeListener(listener); } catch { /* ignore */ }
-      clearTimeout(timer);
-      resolve({ ok, error: error || null });
-    };
-
-    const listener = (id, info) => {
-      if (id === tabId && info.status === 'complete') finish(true);
-    };
-    const timer = setTimeout(() => finish(false, `navigation timed out after ${timeoutMs}ms`), timeoutMs);
-
-    try {
-      chrome.tabs.onUpdated.addListener(listener);
-      chrome.tabs.update(tabId, { url }).catch((err) => finish(false, String(err && err.message)));
-    } catch (err) {
-      finish(false, String(err && err.message));
-    }
-  });
-}
-
-/** `hl=en` keeps the panel's ARIA labels predictable for the extractors. */
-export function placePageUrl(mapsUrl) {
-  try {
-    const u = new URL(mapsUrl);
-    u.searchParams.set('hl', 'en');
-    return u.toString();
-  } catch {
-    return mapsUrl;
-  }
-}
-
-/* ==================================================================== *
  * Resolution
  * ==================================================================== */
 
 /**
- * Resolve one record in a given tab.
+ * Resolve one record via the Maps tab's content script.
  * @returns {{status:'resolved'|'notfound'|'failed', detail:object|null, error:string|null}}
  */
 async function resolveOne(tabId, record, settings) {
   const timeout = Number(settings.detailTimeoutMs) || 15000;
 
-  const nav = await navigate(tabId, placePageUrl(record.mapsUrl), timeout);
-  if (!nav.ok) return { status: 'failed', detail: null, error: nav.error };
-
-  // The content script needs a moment after `complete` before the panel paints.
-  await sleep(Number(settings.detailSettleMs) || 350);
-
   let res;
   try {
-    res = await chrome.tabs.sendMessage(tabId, { type: MSG.DETAIL_EXTRACT, payload: { timeoutMs: timeout } });
+    res = await chrome.tabs.sendMessage(tabId, {
+      type: MSG.DETAIL_EXTRACT,
+      payload: { url: record.mapsUrl, timeoutMs: timeout },
+    });
   } catch (err) {
     return { status: 'failed', detail: null, error: `content script unreachable: ${err && err.message}` };
   }
@@ -229,15 +157,19 @@ function markFailed(record, error) {
  * @param {object[]} records
  * @param {object}   settings  { detailConcurrency, detailTimeoutMs, detailBatchSize, detailRetries }
  * @param {object}   hooks     { onProgress(status), onBatch(records) }
+ * @param {number|null} tabId  the Maps tab whose content script performs the
+ *                             fetches. No tab is opened for this — it is the
+ *                             tab the caller already found via findMapsTab().
  * @returns {{records, stats}}
  */
-export async function resolveAll(records, settings = {}, hooks = {}) {
+export async function resolveAll(records, settings = {}, hooks = {}, tabId = null) {
   const { onProgress, onBatch } = hooks;
   const list = (records || []).slice();
 
   if (runState.running) return { records: list, stats: getDetailStatus(), alreadyRunning: true };
 
-  // Only records that still need something. Nothing is skipped by a cap.
+  // Only records that still need something. Nothing is skipped by a cap, and
+  // nothing already found (often straight off the results card) is re-checked.
   const pendingIdx = list
     .map((r, i) => i)
     .filter((i) => !list[i].fullAddress || !list[i].website || !list[i].phone);
@@ -252,120 +184,97 @@ export async function resolveAll(records, settings = {}, hooks = {}) {
   runState.failed = 0;
   beat('Starting detail resolution');
 
-  const concurrency = Math.max(1, Math.min(Number(settings.detailConcurrency) || 2, 4));
+  const technicalErrors = [];
+
+  if (!tabId) {
+    // Nothing to message, so nothing was checked. Say so plainly rather than
+    // marking every record "Not Found" — that would be a lie.
+    runState.running = false;
+    if (pendingIdx.length) {
+      technicalErrors.push({
+        category: TECH_ERROR.COMMUNICATION,
+        message: 'No Google Maps tab is open — could not resolve place details.',
+      });
+      for (const i of pendingIdx) list[i] = markFailed(list[i], 'no Google Maps tab open');
+      runState.failed = pendingIdx.length;
+      runState.done = pendingIdx.length;
+    }
+    if (typeof onProgress === 'function') { try { onProgress(getDetailStatus()); } catch { /* ignore */ } }
+    return { records: list, stats: { ...getDetailStatus(), technicalErrors }, aborted: false };
+  }
+
+  const concurrency = Math.max(1, Math.min(Number(settings.detailConcurrency) || 5, 8));
   const batchSize = Math.max(1, Number(settings.detailBatchSize) || 10);
   const retries = Math.max(0, Number(settings.detailRetries) || 1);
-
-  const pool = new TabPool(concurrency);
-  const technicalErrors = [];
 
   // Mark everything queued so the UI can say "Pending" rather than "Not found".
   for (const i of pendingIdx) {
     if (!list[i].fullAddress) list[i] = { ...list[i], fullAddressStatus: FIELD_STATUS.PENDING };
   }
 
-  // Records this run actually reached. Anything not in here keeps its previous
-  // status: reporting an unvisited place as "Not Found" would be a lie.
   const attempted = new Set();
-  let tabsOpened = 0;
 
   try {
-    const workers = [];
-    let cursor = 0;
+    await mapLimit(pendingIdx, concurrency, async (index) => {
+      await waitWhilePaused();
+      if (runState.abort) return;
 
-    for (let w = 0; w < concurrency; w++) {
-      workers.push((async () => {
-        const tabId = await pool.acquire();
-        if (!tabId) return;
-        tabsOpened += 1;
+      const record = list[index];
+      attempted.add(index);
 
-        for (;;) {
-          await waitWhilePaused();
-          if (runState.abort) return;
+      let outcome = null;
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        if (runState.abort) return;
+        outcome = await safeCall(
+          'detail.resolve',
+          () => resolveOne(tabId, record, settings),
+          { timeout: (Number(settings.detailTimeoutMs) || 15000) + 5000, fallback: null },
+        );
+        if (outcome.ok && outcome.value && outcome.value.status !== 'failed') break;
+        if (attempt < retries) await sleep(400 * (attempt + 1));
+      }
 
-          const slot = cursor++;
-          if (slot >= pendingIdx.length) return;
-          const index = pendingIdx[slot];
-          const record = list[index];
-          attempted.add(index);
+      const result = (outcome && outcome.value) || { status: 'failed', detail: null, error: (outcome && outcome.error) || 'unknown' };
 
-          let outcome = null;
-          for (let attempt = 0; attempt <= retries; attempt++) {
-            if (runState.abort) return;
-            outcome = await safeCall(
-              'detail.resolve',
-              () => resolveOne(tabId, record, settings),
-              { timeout: (Number(settings.detailTimeoutMs) || 15000) + 8000, fallback: null },
-            );
-            if (outcome.ok && outcome.value && outcome.value.status !== 'failed') break;
-            if (attempt < retries) await sleep(600 * (attempt + 1));
-          }
+      if (result.status === 'resolved') {
+        list[index] = applyDetail(record, result.detail);
+        runState.resolved += 1;
+        diag.reportOk('detail.panel');
+      } else if (result.status === 'notfound') {
+        // The place's page exposes nothing for this field. Data quality, NOT an error.
+        list[index] = applyDetail(record, result.detail || {});
+        runState.notFound += 1;
+        diag.reportOk('detail.panel', 'place exposes no detail rows', 0);
+      } else {
+        // A genuine failure: fetch, messaging or timeout.
+        list[index] = markFailed(record, result.error);
+        runState.failed += 1;
+        technicalErrors.push({ category: TECH_ERROR.TIMEOUT, message: result.error });
+        diag.reportFail('detail.panel', result.error);
+      }
 
-          const result = (outcome && outcome.value) || { status: 'failed', detail: null, error: (outcome && outcome.error) || 'unknown' };
+      runState.done += 1;
+      beat(`Resolved ${runState.done}/${runState.total}`);
 
-          if (result.status === 'resolved') {
-            list[index] = applyDetail(record, result.detail);
-            runState.resolved += 1;
-            diag.reportOk('detail.panel');
-          } else if (result.status === 'notfound') {
-            // Google exposes nothing for this place. Data quality, NOT an error.
-            list[index] = applyDetail(record, result.detail || {});
-            runState.notFound += 1;
-            diag.reportOk('detail.panel', 'place exposes no detail rows', 0);
-          } else {
-            // A genuine failure: navigation, messaging or timeout.
-            list[index] = markFailed(record, result.error);
-            runState.failed += 1;
-            technicalErrors.push({ category: TECH_ERROR.TIMEOUT, message: result.error });
-            diag.reportFail('detail.panel', result.error);
-          }
-
-          runState.done += 1;
-          beat(`Resolved ${runState.done}/${runState.total}`);
-
-          if (runState.done % 3 === 0 || runState.done === runState.total) {
-            if (typeof onProgress === 'function') {
-              try { onProgress(getDetailStatus()); } catch { /* sink guarded */ }
-            }
-          }
-          if (runState.done % batchSize === 0 && typeof onBatch === 'function') {
-            try { await onBatch(list); } catch (err) { log.warn('batch persist failed', err); }
-          }
-
-          await sleep(Number(settings.detailPaceMs) || 120);
+      if (runState.done % 3 === 0 || runState.done === runState.total) {
+        if (typeof onProgress === 'function') {
+          try { onProgress(getDetailStatus()); } catch { /* sink guarded */ }
         }
-      })().catch((err) => {
-        // One worker dying must not abort the others, and must not reject the
-        // Promise.all that keeps `finally` from closing tabs out from under them.
-        log.warn('detail worker failed', err);
-        technicalErrors.push({ category: TECH_ERROR.UNEXPECTED, message: `detail worker: ${err && err.message}` });
-      }));
-    }
+      }
+      if (runState.done % batchSize === 0 && typeof onBatch === 'function') {
+        try { await onBatch(list); } catch (err) { log.warn('batch persist failed', err); }
+      }
 
-    await Promise.all(workers);
+      // Be polite to Google's servers between requests in the same lane.
+      await sleep(Number(settings.detailPaceMs) || 120);
+    }, () => runState.abort);
   } finally {
-    await pool.closeAll();
     runState.running = false;
   }
 
-  if (tabsOpened === 0 && pendingIdx.length) {
-    // Nothing could be opened, so nothing was checked. Say so plainly rather
-    // than marking every record "Not Found".
-    technicalErrors.push({
-      category: TECH_ERROR.COMMUNICATION,
-      message: 'Could not open a background tab for detail resolution.',
-    });
-    for (const i of pendingIdx) {
-      if (list[i].fullAddressStatus === FIELD_STATUS.PENDING) {
-        list[i] = { ...list[i], fullAddressStatus: FIELD_STATUS.FAILED };
-      }
-    }
-    runState.failed += pendingIdx.length;
-  }
-
-  // Finalise ONLY the records this run actually visited. A record left pending
-  // because the run was stopped, or because no tab could be opened, keeps a
-  // status that reflects the truth instead of an invented "Not Found".
+  // Finalise ONLY the records this run actually attempted. A record left
+  // pending because the run was stopped keeps a status that reflects the
+  // truth instead of an invented "Not Found".
   for (const i of attempted) {
     if (list[i].fullAddressStatus === FIELD_STATUS.PENDING) {
       list[i] = { ...list[i], fullAddressStatus: list[i].fullAddress ? FIELD_STATUS.FOUND : FIELD_STATUS.NOT_FOUND };

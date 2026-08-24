@@ -101,7 +101,7 @@ records after collection. Never a line inside the collect loop.
 ```bash
 node tools/verify-isolation.mjs   # Start-button isolation contract
 node tools/verify-build.mjs       # syntax, imports, exports, manifest, CSP
-node tools/run-tests.mjs          # 148 tests incl. all 23 v3 scenarios
+node tools/run-tests.mjs          # 197 tests incl. all 23 v3 scenarios
 ```
 
 All three run on plain Node with no dependencies installed.
@@ -132,12 +132,12 @@ src/
   jobs/                       job-manager · dataset (combine) · queue · projects
   background/
     service-worker.js  router.js  net.js
-    detail-resolver.js        background tab pool, no cap, batched
+    detail-resolver.js        missing-field-only, same-origin fetch, no tabs, no cap
   sidepanel/                  Home / Jobs / Data / Filter / Enrich / Export / Settings
 tools/
   verify-isolation.mjs        enforces the Start-button contract
   verify-build.mjs            syntax, imports, exports, manifest, match patterns
-  run-tests.mjs               121 tests
+  run-tests.mjs               197 tests
   harness/mini-dom.mjs        dependency-free DOM, incl. a VIRTUALIZED feed
 docs/ARCHITECTURE.md          full architecture + the v2.0.1 audit
 ```
@@ -177,13 +177,14 @@ These are real constraints, not bugs. Nothing is faked to hide them.
 
 | Field | Behaviour |
 |---|---|
-| **Full Address** | Read from the place's rendered Maps panel. Complete when Google exposes the components; **blank** when it exposes only a street line, with `Full Address Status = Not Found`. |
-| **Country** | Appended only when the panel or payload actually carries it. Never inferred from a postcode or phone prefix. |
+| **Website / Phone** | Read straight off the results card when Google renders them there — most records get these for free during collection, no extra request. Whatever's still missing is picked up by detail resolution. |
+| **Full Address** | Google's results card never shows the complete address, only a street line — this always comes from detail resolution: a same-origin fetch of the place page from your Maps tab, no new tab, no navigation. Complete when Google exposes the components; **blank** when it doesn't, with `Full Address Status = Not Found`. |
+| **Country** | Appended only when the response actually carries it. Never inferred from a postcode or phone prefix. |
 | **Latitude / Longitude** | From the place URL or payload. Not every result exposes them; those export blank. |
 | **Website** | Rejected outright if it is `schema.org`, any Google-owned host, or a Maps internal URL. A business with no website gets a blank and `Website Status = Not Found`. |
 | **Email** | Only ever read from the business's own public website. No pattern-guessing, no third-party lookup. |
 | **Rating** | Parsed from the star widget's ARIA label first (locale-safe). Anything outside 0–5 is rejected as a mis-parse and left blank. |
-| **Detail resolution speed** | Roughly 1–3 seconds per record. 51 records with 2 background tabs is about 40–70 seconds. That is the cost of reading the rendered panel instead of guessing from an HTTP response. |
+| **Detail resolution speed** | A handful of concurrent same-origin fetches, not per-record tab navigation — dozens of records typically resolve in a few seconds, with Chrome staying fully responsive throughout. |
 
 ---
 

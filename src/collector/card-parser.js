@@ -7,6 +7,7 @@
  */
 import * as S from './selectors.js';
 import { queryFirst, text, attr } from './dom.js';
+import * as V from './validators.js';
 
 /* ==================================================================== *
  * RATING + REVIEW COUNT
@@ -189,6 +190,43 @@ export function parsePlaceIdentity(href) {
 }
 
 /* ==================================================================== *
+ * WEBSITE + PHONE, straight off the card
+ *
+ * Google sometimes renders these as quick-action buttons directly on the
+ * results card (not just inside the place detail panel). When they're
+ * there, reading them here means the record is complete without ever
+ * needing a detail-resolution pass for that field. When they're not there,
+ * this simply returns '' — nothing is invented, and detail resolution (a
+ * separate, later, optional stage) can still fill the gap.
+ * ==================================================================== */
+
+/** Business website from the card, or '' if absent/rejected. */
+export function extractCardWebsite(cardEl) {
+  const el = queryFirst(S.CARD_WEBSITE, cardEl);
+  if (!el) return '';
+  const href = el.href || attr(el, 'href');
+  return V.isPlausibleWebsite(href) ? href : '';
+}
+
+/** Business phone from the card, or '' if absent/rejected. */
+export function extractCardPhone(cardEl) {
+  const el = queryFirst(S.CARD_PHONE, cardEl);
+  if (!el) return '';
+
+  const itemId = attr(el, 'data-item-id');
+  const fromId = itemId.replace(/^phone:tel:/, '');
+  if (fromId && fromId !== itemId && V.isPlausiblePhone(fromId)) return fromId;
+
+  const fromHref = attr(el, 'href').replace(/^tel:/i, '');
+  if (V.isPlausiblePhone(fromHref)) return fromHref;
+
+  const fromAria = attr(el, 'aria-label').replace(/^Phone:\s*/i, '');
+  if (V.isPlausiblePhone(fromAria)) return fromAria;
+
+  return '';
+}
+
+/* ==================================================================== *
  * DOM READER
  * ==================================================================== */
 
@@ -249,9 +287,9 @@ export function parseCard(cardEl, serial) {
     rating,
     reviewCount,
     address: addressLine,          // short street line from the card
-    fullAddress: '',               // filled by the detail resolver
-    website: '',
-    phone: '',
+    fullAddress: '',               // filled by detail resolution when the card lacks it
+    website: extractCardWebsite(cardEl),   // '' when Google doesn't render it on the card
+    phone: extractCardPhone(cardEl),       // '' when Google doesn't render it on the card
     mapsUrl: href,
     placeId: identity.placeId || '',
     cid: identity.cid || '',

@@ -1,5 +1,56 @@
 # Changelog
 
+## 4.1.0 — card-first collection, no per-business tabs
+
+A second audit — this time comparing the codebase against a working prior
+version of this same product — found that v4.0.0's UI fix sat on top of a
+collection *engine* that still opened a real background tab and navigated it
+for every business in Standard/Advanced mode, automatically, right after
+every collection. Card-level collection and end-of-list detection were
+already sound (kept as-is); this release only replaces how the remaining,
+optional detail-resolution step gets its data.
+
+### Fixed — heavy, tab-based detail resolution
+- **Website and Phone are now read straight off the results card** when
+  Google renders them there (`card-parser.js` gains `extractCardWebsite`/
+  `extractCardPhone`, backed by new `CARD_WEBSITE`/`CARD_PHONE` selectors) —
+  the same zero-network-cost pass that already reads Business Name,
+  Category, Rating, Reviews and the street Address. Most records now have
+  these two fields the instant they're collected.
+- **Detail resolution no longer opens a tab.** `background/detail-resolver.js`
+  drops the `TabPool`/`navigate()`/`chrome.tabs.create` mechanism entirely.
+  What's left after card-first collection — almost always Full Address,
+  since Maps' card never shows a complete postal address — is resolved by
+  asking the Maps tab's *own* content script to `fetch()` the place page, a
+  same-origin request that carries the user's session automatically. See
+  `docs/ARCHITECTURE.md` §0.2 for why this fetch is reliable where an
+  earlier, background-worker-issued one (row 2 of the v2.0.1 audit table)
+  was not — different context, different result.
+- `collector/place-detail.js`'s DOM extractors (`extractAddress`,
+  `extractWebsite`, `extractPhone`, `extractHeader`) now take a `root`
+  document parameter instead of assuming the live page, so the same
+  extraction logic reads either a live panel or a `DOMParser`-parsed fetch
+  response. `readPlacePage()`/`waitForPlacePanel()` (the live-tab-only path)
+  are gone, superseded by `extractFromDocument()` + `fetchPlaceDetail()`.
+- Bounded concurrency for these fetches uses `core/safe.js:mapLimit` (default
+  5 concurrent) — the same primitive `enrich-manager.js` already used for
+  website fetches — instead of a 2–4-tab pool.
+- `router.js:startDetailResolution()` now skips the whole stage when nothing
+  is missing (common now that Website/Phone are often already there from
+  Phase 1), and otherwise looks up the Maps tab once and passes its id
+  through — no tab is created for this at any point.
+- If no Google Maps tab is open when detail resolution runs, the affected
+  records are marked `Failed` with a technical error explaining why, rather
+  than silently guessed or left stuck `Pending`.
+
+### Tests
+- Rewrote the detail-resolver test group for the new mechanism (no
+  `chrome.tabs.create` mocking) and added an explicit assertion that zero
+  tabs are ever created across a run, plus a dedicated 51-business
+  end-to-end test (card-first collection → missing-field-only detail
+  resolution) that reports collection time, per-field coverage, Phase 2
+  fetch count and tab count. 197 tests total (was 148).
+
 ## 4.0.0 — one screen, not two mechanisms
 
 Audit of v3.0.1 against its own code (not just its docs) confirmed the

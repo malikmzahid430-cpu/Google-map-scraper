@@ -4,7 +4,7 @@
  */
 
 export const APP_NAME = 'Al-Aqsa Scraper';
-export const APP_VERSION = '4.0.0';
+export const APP_VERSION = '4.1.0';
 
 /* ------------------------------------------------------------------ *
  * Storage keys. Records are sharded per job so a big job never has to
@@ -328,13 +328,17 @@ export const DEFAULT_SETTINGS = {
   maxNoChangeAttempts: 8,
   maxRecords: 0,               // 0 = collect everything
 
-  /* --- detail resolution (a separate stage, no cap) --- */
+  /* --- detail resolution (a separate stage, no cap, no tabs) ---
+   * Only records still missing Full Address, Website or Phone after
+   * collection reach this stage at all — most don't, because card-parser.js
+   * already reads Website/Phone straight off the results card when Google
+   * renders them there. What's left is resolved via concurrent same-origin
+   * fetches from the Maps tab's own content script, never a new tab. */
   autoResolveDetails: true,    // run automatically after a Standard/Advanced collection
-  detailConcurrency: 2,        // background tabs; 1-4
+  detailConcurrency: 5,        // concurrent fetches from the Maps tab; 1-8
   detailTimeoutMs: 15000,
   detailRetries: 1,
   detailBatchSize: 10,         // persist every N records
-  detailSettleMs: 350,
   detailPaceMs: 120,
   enrich: {
     website: true,

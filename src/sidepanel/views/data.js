@@ -45,7 +45,7 @@ export function renderData(state) {
   ${all.length ? renderTable(state, all) : `<div class="card">${empty('&#9776;',
     state.records.length
       ? 'No records match the current filters.<br>Adjust them on the Filter tab.'
-      : 'No records yet.<br>Run a collection on the Scrape tab.')}</div>`}
+      : 'No records yet.<br>Run a collection on the Home tab.')}</div>`}
   ${renderSourcesCard(state)}
   `;
 }

@@ -75,6 +75,27 @@ export const CARD_BODY = [
   'div[jsinstance] > div:nth-child(2)',
 ];
 
+/**
+ * Website and phone, when Google renders them directly on the results card
+ * (as quick-action buttons) rather than only inside the place detail panel.
+ * Not every card exposes these — when absent, the record simply carries no
+ * value here and (if requested) picks it up later from detail resolution.
+ * Same `data-item-id` hooks as the detail panel first, then the older
+ * `data-value`/class-based markup some Maps rollouts still use for cards.
+ */
+export const CARD_WEBSITE = [
+  'a[data-item-id="authority"]',
+  'a[data-value="Website"]',
+  '[data-value="Website"] a',
+  'a.lcr4fd',
+];
+
+export const CARD_PHONE = [
+  'button[data-item-id^="phone:tel:"]',
+  '[data-item-id^="phone:tel:"]',
+  'a[href^="tel:"]',
+];
+
 /* -------------------------------------------------------------------------
  * PLACE DETAIL PANEL — used by the DOM fallback path when the HTTP parser
  * cannot resolve a field. `data-item-id` is the most durable hook Maps has.

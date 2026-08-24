@@ -13,7 +13,7 @@ export function renderExport(state) {
   const selected = new Set(state.settings.fields || []);
 
   if (!state.records.length) {
-    return `<div class="card">${empty('&#8681;', 'Nothing to export yet.<br>Run a collection on the Scrape tab.')}</div>`;
+    return `<div class="card">${empty('&#8681;', 'Nothing to export yet.<br>Run a collection on the Home tab.')}</div>`;
   }
 
   return `
