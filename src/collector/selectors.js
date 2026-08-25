@@ -94,6 +94,10 @@ export const CARD_PHONE = [
   'button[data-item-id^="phone:tel:"]',
   '[data-item-id^="phone:tel:"]',
   'a[href^="tel:"]',
+  'button[data-tooltip="Copy phone number"]',
+  '[data-tooltip="Copy phone number"]',
+  'button[aria-label^="Phone:"]',
+  '[aria-label^="Phone:"]',
 ];
 
 /* -------------------------------------------------------------------------

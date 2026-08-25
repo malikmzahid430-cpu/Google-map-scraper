@@ -4,7 +4,7 @@
  */
 
 export const APP_NAME = 'Al-Aqsa Scraper';
-export const APP_VERSION = '4.2.0';
+export const APP_VERSION = '4.3.0';
 
 /* ------------------------------------------------------------------ *
  * Storage keys. Records are sharded per job so a big job never has to
@@ -138,24 +138,24 @@ export const FIELDS = [
   { key: 'category', label: 'Category', group: 'core', default: true },
   { key: 'rating', label: 'Review Rating', group: 'core', default: true },
   { key: 'reviewCount', label: 'Number of Reviews', group: 'core', default: true },
-  { key: 'address', label: 'Address', group: 'core', default: false },
-  { key: 'fullAddress', label: 'Full Address', group: 'core', default: true },
+  { key: 'address', label: 'Address', group: 'core', default: true },
+  { key: 'fullAddress', label: 'Full Address', group: 'core', default: false },
   { key: 'city', label: 'City', group: 'core', default: false },
   { key: 'state', label: 'State / Region', group: 'core', default: false },
   { key: 'postalCode', label: 'Postal Code', group: 'core', default: false },
   { key: 'country', label: 'Country', group: 'core', default: false },
   { key: 'website', label: 'Website', group: 'core', default: true },
   { key: 'phone', label: 'Phone', group: 'core', default: true },
-  { key: 'mapsUrl', label: 'Maps URL', group: 'core', default: true },
+  { key: 'mapsUrl', label: 'Maps URL', group: 'core', default: false },
   { key: 'latitude', label: 'Latitude', group: 'core', default: false },
   { key: 'longitude', label: 'Longitude', group: 'core', default: false },
 
-  { key: 'email', label: 'Email', group: 'enrich', default: true },
+  { key: 'email', label: 'Email', group: 'enrich', default: false },
   { key: 'emailStatus', label: 'Email Status', group: 'enrich', default: false },
-  { key: 'facebook', label: 'Facebook', group: 'enrich', default: true },
-  { key: 'instagram', label: 'Instagram', group: 'enrich', default: true },
+  { key: 'facebook', label: 'Facebook', group: 'enrich', default: false },
+  { key: 'instagram', label: 'Instagram', group: 'enrich', default: false },
   { key: 'tiktok', label: 'TikTok', group: 'enrich', default: false },
-  { key: 'linkedin', label: 'LinkedIn', group: 'enrich', default: true },
+  { key: 'linkedin', label: 'LinkedIn', group: 'enrich', default: false },
   { key: 'youtube', label: 'YouTube', group: 'enrich', default: false },
   { key: 'twitter', label: 'X / Twitter', group: 'enrich', default: false },
 
@@ -180,6 +180,13 @@ export const FIELD_GROUPS = [
   { id: 'quality', label: 'Quality' },
   { id: 'source', label: 'Source' },
 ];
+
+/**
+ * The six fields every collection always attempts, with no picker and no
+ * mode to configure. The Home screen renders these as locked/checked; every
+ * other field is opt-in under "Additional fields".
+ */
+export const DEFAULT_FIELD_KEYS = ['businessName', 'website', 'phone', 'address', 'rating', 'reviewCount'];
 
 /**
  * FIELD MAPPING — what each field means, where it comes from, what it looks

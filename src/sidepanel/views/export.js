@@ -6,7 +6,7 @@
  * configured the UI says exactly that instead of pretending to be connected.
  */
 import { MSG, FIELDS, FIELD_GROUPS } from '../../core/constants.js';
-import { esc, onClick, banner, toast, empty } from '../ui.js';
+import { esc, onClick, banner, toast, empty, stat } from '../ui.js';
 
 export function renderExport(state) {
   const rows = state.visibleRecords();
@@ -38,12 +38,27 @@ export function renderExport(state) {
   </div>
 
   <div class="card">
-    <h2>Download <span class="count">${rows.length} row(s)</span></h2>
-    <div class="row">
-      <button class="primary grow lg" data-act="csv" ${state.busy ? 'disabled' : ''}>Export CSV</button>
-      <button class="grow lg" data-act="xlsx" ${state.busy ? 'disabled' : ''}>Export Excel</button>
+    <h2>Download</h2>
+    <div class="stats" style="margin:6px 0 10px">
+      ${stat(state.records.length, 'Total records')}
+      ${stat(rows.length, 'Filtered records', rows.length !== state.records.length ? 'accent' : '')}
     </div>
-    <p class="hint tiny">Both are generated inside the extension with no third-party library and no Google sign-in. ${state.activeFilterCount() ? `<strong>${state.activeFilterCount()} filter(s) active</strong> — only the ${rows.length} matching record(s) will be exported.` : ''} Scope: <strong>${esc(state.scope)}</strong>.</p>
+    ${rows.length !== state.records.length ? `
+      <div class="row">
+        <button class="primary grow lg" data-act="csv" data-scope="filtered" ${state.busy ? 'disabled' : ''}>Export ${rows.length} Filtered (CSV)</button>
+        <button class="grow lg" data-act="xlsx" data-scope="filtered" ${state.busy ? 'disabled' : ''}>Export ${rows.length} Filtered (Excel)</button>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button class="ghost grow" data-act="csv" data-scope="all" ${state.busy ? 'disabled' : ''}>Export All ${state.records.length} (CSV)</button>
+        <button class="ghost grow" data-act="xlsx" data-scope="all" ${state.busy ? 'disabled' : ''}>Export All ${state.records.length} (Excel)</button>
+      </div>
+      <p class="hint tiny" style="margin-top:8px"><strong>${state.activeFilterCount()} filter(s) active</strong> — the highlighted buttons export only the ${rows.length} matching record(s). Use "Export All" to ignore the current filters instead.</p>` : `
+      <div class="row">
+        <button class="primary grow lg" data-act="csv" data-scope="all" ${state.busy ? 'disabled' : ''}>Export CSV</button>
+        <button class="grow lg" data-act="xlsx" data-scope="all" ${state.busy ? 'disabled' : ''}>Export Excel</button>
+      </div>
+      <p class="hint tiny" style="margin-top:8px">No filters are active, so this exports every record in scope.</p>`}
+    <p class="hint tiny">Both are generated inside the extension with no third-party library and no Google sign-in. Scope: <strong>${esc(state.scope)}</strong>.</p>
   </div>
 
   ${renderSheetsCard(state, rows)}
@@ -121,7 +136,9 @@ export function bindExport() {
   onClick(root, '[data-act]', async (e, el) => {
     const app = await import('../app.js');
     const fields = app.state.settings.fields;
-    const records = app.state.visibleRecords();
+    // "filtered" (default) respects the Filter tab's active criteria; "all"
+    // exports every record in the current scope regardless of filters.
+    const records = el.dataset.scope === 'all' ? app.state.records : app.state.visibleRecords();
 
     switch (el.dataset.act) {
       case 'csv':

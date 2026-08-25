@@ -211,7 +211,9 @@ let placeSeq = 0;
  * doesn't expose them, same as any real result that only has these fields
  * available later, via detail resolution.
  */
-export function makeCard({ name, category, rating, reviews, street, open = true, website = '', phone = '' } = {}) {
+export function makeCard({
+  name, category, rating, reviews, street, open = true, website = '', phone = '', phoneText = '',
+} = {}) {
   placeSeq += 1;
   const slug = String(name).replace(/[^A-Za-z0-9]+/g, '+');
   const href = `https://www.google.com/maps/place/${slug}/@30.2${placeSeq},-81.7${placeSeq},17z/data=!4m6!3m5!1s0x88e5b3f0a1b2c${String(placeSeq).padStart(3, '0')}:0x9f2a3b4c5d6e7f${String(placeSeq).padStart(2, '0')}!8m2!3d30.2${placeSeq}!4d-81.7${placeSeq}`;
@@ -229,6 +231,10 @@ export function makeCard({ name, category, rating, reviews, street, open = true,
   body.append(new El('div').append(`${rating} (${reviews})`));
   body.append(new El('div').append(`${category} · ${street}`));
   if (open) body.append(new El('div').append('Open ⋅ Closes 5 PM'));
+  // Some Maps rollouts print the phone number as plain visible text (often
+  // sharing a row with hours/status) instead of a dedicated button/anchor —
+  // no data-item-id, no tel: href, nothing but the text itself.
+  if (phoneText) body.append(new El('div').append(phoneText));
 
   const card = new El('div', { jsaction: 'pane.card', class: 'Nv2PK' });
   card.append(link);

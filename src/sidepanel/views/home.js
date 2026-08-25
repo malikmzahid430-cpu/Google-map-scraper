@@ -18,31 +18,13 @@
  * results feed is ready. One or many rows use the exact same path — there is
  * no separate concept for "a queue" the user has to learn.
  */
-import { MSG, JOB_STATUS, MODE, FIELDS } from '../../core/constants.js';
+import { MSG, JOB_STATUS, DEFAULT_FIELD_KEYS } from '../../core/constants.js';
 import { esc, stat, onClick, toast, agoShort, coverageRow } from '../ui.js';
 import * as queue from '../../jobs/queue.js';
 import { STALL_THRESHOLD_MS } from '../../jobs/job-manager.js';
 
 /** Second tier of the stall watchdog — past this it's not "recovering" anymore. */
 const NEEDS_ATTENTION_MS = STALL_THRESHOLD_MS * 3;
-
-const MODE_INFO = {
-  [MODE.FAST]: {
-    icon: '&#9889;',
-    title: 'Fast',
-    blurb: 'Name, category, rating, reviews, Maps URL. Reads the results list only — no place is opened, so it is by far the quickest.',
-  },
-  [MODE.STANDARD]: {
-    icon: '&#9673;',
-    title: 'Standard',
-    blurb: 'Everything in Fast, plus address, full address, website and phone. Place details resolve after collection finishes.',
-  },
-  [MODE.ADVANCED]: {
-    icon: '&#9670;',
-    title: 'Advanced',
-    blurb: 'Everything in Standard, plus coordinates. Email, social, validation and scoring then run from the Enrich tab.',
-  },
-};
 
 export function renderHome(state) {
   const job = state.job;
@@ -54,7 +36,6 @@ export function renderHome(state) {
   return `
     ${renderIntro(state)}
     ${renderSearchCard(state, active)}
-    ${renderModeCard(state, active)}
     ${renderFieldsCard(state, active)}
     ${renderStatusCard(state, job, status, running, paused, active)}
     ${renderQueueCard(state)}
@@ -155,54 +136,59 @@ function renderDetection(detect, searchMode, disabled) {
   </div>`;
 }
 
-/* -------------------------------- mode ------------------------------- */
-
-function renderModeCard(state, disabled) {
-  const mode = state.settings.mode;
-  const info = MODE_INFO[mode] || MODE_INFO[MODE.STANDARD];
-
-  return `
-  <div class="card">
-    <h2>Extraction mode</h2>
-    <div class="seg">
-      ${[MODE.FAST, MODE.STANDARD, MODE.ADVANCED].map((m) => `
-        <button data-mode="${m}" aria-pressed="${m === mode}" ${disabled ? 'disabled' : ''}>
-          ${MODE_INFO[m].icon} ${MODE_INFO[m].title}
-        </button>`).join('')}
-    </div>
-    <p class="hint">${info.blurb}</p>
-  </div>`;
-}
-
 /* ------------------------------- fields ------------------------------ */
+
+/** Display labels for the Home screen's field picker — short and plain,
+ * independent of the export-column labels the rest of the app uses. */
+const DEFAULT_FIELD_LABELS = [
+  ['businessName', 'Business Name'],
+  ['website', 'Website'],
+  ['phone', 'Phone Number'],
+  ['address', 'Address'],
+  ['rating', 'Rating'],
+  ['reviewCount', 'Reviews'],
+];
+
+const ADDITIONAL_FIELD_LABELS = [
+  ['fullAddress', 'Full Address'],
+  ['email', 'Email'],
+  ['facebook', 'Facebook'],
+  ['instagram', 'Instagram'],
+  ['linkedin', 'LinkedIn'],
+  ['tiktok', 'TikTok'],
+  ['youtube', 'YouTube'],
+  ['twitter', 'X / Twitter'],
+  ['mapsUrl', 'Maps URL'],
+  ['latitude', 'Latitude'],
+  ['longitude', 'Longitude'],
+];
 
 function renderFieldsCard(state, disabled) {
   const selected = new Set(state.settings.fields || []);
-  const core = FIELDS.filter((f) => f.group === 'core');
-  const enrichFields = FIELDS.filter((f) => f.group === 'enrich');
+  const additionalCount = ADDITIONAL_FIELD_LABELS.filter(([key]) => selected.has(key)).length;
 
   return `
   <div class="card">
-    <h2>Fields to collect <span class="count">${selected.size} selected</span></h2>
+    <h2>Default fields <span class="count">always collected</span></h2>
     <div class="check-grid">
-      ${core.map((f) => `
-        <label class="check">
-          <input type="checkbox" data-field="${esc(f.key)}" ${selected.has(f.key) ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
-          <span>${esc(f.label)}</span>
+      ${DEFAULT_FIELD_LABELS.map(([, label]) => `
+        <label class="check locked">
+          <input type="checkbox" checked disabled>
+          <span>${esc(label)}</span>
         </label>`).join('')}
     </div>
-    <p class="hint tiny"><strong>Address</strong> is the street line from the results card. <strong>Full Address</strong> is the complete postal address, resolved separately when the card doesn't show it. When genuinely unavailable, it stays blank rather than showing a partial one.</p>
+    <p class="hint tiny">Every collection automatically attempts these six fields for every business Google Maps returns — there is no mode to pick and nothing to configure.</p>
 
     <div class="divider"></div>
-    <div class="section-label" style="margin:0 0 6px">Optional — found during Enrich, not collection</div>
+    <div class="section-label" style="margin:0 0 6px">Additional fields <span class="count">${additionalCount} selected</span></div>
     <div class="check-grid">
-      ${enrichFields.map((f) => `
+      ${ADDITIONAL_FIELD_LABELS.map(([key, label]) => `
         <label class="check">
-          <input type="checkbox" data-field="${esc(f.key)}" ${selected.has(f.key) ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
-          <span>${esc(f.label)}</span>
+          <input type="checkbox" data-field="${esc(key)}" ${selected.has(key) ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+          <span>${esc(label)}</span>
         </label>`).join('')}
     </div>
-    <p class="hint tiny">Selecting these doesn't slow collection down — they're only looked up when you run <strong>Enrich</strong> afterwards, and only for records that need them.</p>
+    <p class="hint tiny">Full Address, coordinates and Maps URL come from the same collection pass. Email and social profiles are found afterwards from <strong>Enrich</strong> and never slow collection down.</p>
   </div>`;
 }
 
@@ -448,11 +434,6 @@ function readExtraRows(root) {
 export function bindHome() {
   const root = document.getElementById('view-home');
 
-  onClick(root, '[data-mode]', async (e, el) => {
-    const app = await import('../app.js');
-    await app.saveSettings({ mode: el.dataset.mode });
-  });
-
   onClick(root, '[data-search-mode]', async (e, el) => {
     const app = await import('../app.js');
     app.state.searchMode = el.dataset.searchMode;
@@ -463,7 +444,11 @@ export function bindHome() {
     const app = await import('../app.js');
 
     if (e.target.matches('[data-field]')) {
-      const fields = new Set(app.state.settings.fields || []);
+      // The six default fields have no checkbox (they're locked on) — union
+      // them back in on every save so a legacy/stale settings object can
+      // never silently drop one just because this toggle only ever touches
+      // the optional list.
+      const fields = new Set([...(app.state.settings.fields || []), ...DEFAULT_FIELD_KEYS]);
       if (e.target.checked) fields.add(e.target.dataset.field);
       else fields.delete(e.target.dataset.field);
       await app.saveSettings({ fields: [...fields] });

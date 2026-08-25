@@ -149,7 +149,24 @@ export function parseCategoryAndAddressLine(bodyText) {
     );
     if (cand && cand !== lines[0]) out.category = cand;
   }
+
+  // Defensive: a phone number must never end up in Category or Address —
+  // it belongs in Phone only. Strip one trailing off the address line (Maps
+  // sometimes prints it on the same row as hours/status) and drop either
+  // field outright if it turns out to be nothing but a phone number.
+  if (out.addressLine) out.addressLine = stripTrailingPhone(out.addressLine);
+  if (out.category && V.isPlausiblePhone(out.category)) out.category = '';
+  if (out.addressLine && V.isPlausiblePhone(out.addressLine)) out.addressLine = '';
+
   return out;
+}
+
+/** Remove a phone number trailing at the end of a string, if present. */
+function stripTrailingPhone(s) {
+  return String(s || '')
+    .replace(/\s*\+\d[\d\s().-]{6,}$/i, '')
+    .replace(/\s*\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\s*$/i, '')
+    .trim();
 }
 
 /**
@@ -208,20 +225,46 @@ export function extractCardWebsite(cardEl) {
   return V.isPlausibleWebsite(href) ? href : '';
 }
 
+/**
+ * Text-fallback phone patterns — used only when the card exposes no
+ * dedicated phone control (button/anchor). Google frequently prints the
+ * number as plain visible text on the card (often sharing a line with hours
+ * or status) rather than as a `data-item-id`/`tel:` element, which is why a
+ * selector-only extractor misses numbers a user can plainly see.
+ *
+ * INTL is anchored on a literal "+" so it can never match a street number,
+ * ZIP code or price. NA is the North-American 3-3-4 grouping carried over
+ * unchanged from the extraction logic that reliably found these before this
+ * card-first rewrite.
+ */
+const CARD_PHONE_INTL_RE = /\+\d{1,3}[\s.-]?\(?\d{1,4}\)?(?:[\s.-]?\d){6,13}/;
+const CARD_PHONE_NA_RE = /(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b/;
+
 /** Business phone from the card, or '' if absent/rejected. */
 export function extractCardPhone(cardEl) {
   const el = queryFirst(S.CARD_PHONE, cardEl);
-  if (!el) return '';
+  if (el) {
+    const itemId = attr(el, 'data-item-id');
+    const fromId = itemId.replace(/^phone:tel:/, '');
+    if (fromId && fromId !== itemId && V.isPlausiblePhone(fromId)) return fromId;
 
-  const itemId = attr(el, 'data-item-id');
-  const fromId = itemId.replace(/^phone:tel:/, '');
-  if (fromId && fromId !== itemId && V.isPlausiblePhone(fromId)) return fromId;
+    const fromHref = attr(el, 'href').replace(/^tel:/i, '');
+    if (V.isPlausiblePhone(fromHref)) return fromHref;
 
-  const fromHref = attr(el, 'href').replace(/^tel:/i, '');
-  if (V.isPlausiblePhone(fromHref)) return fromHref;
+    const fromAria = attr(el, 'aria-label').replace(/^Phone:\s*/i, '');
+    if (V.isPlausiblePhone(fromAria)) return fromAria;
+  }
 
-  const fromAria = attr(el, 'aria-label').replace(/^Phone:\s*/i, '');
-  if (V.isPlausiblePhone(fromAria)) return fromAria;
+  // No selector matched (or what it held wasn't a plausible number) — look
+  // for a phone-shaped run of text anywhere on the card before giving up.
+  const cardText = text(cardEl);
+  if (cardText) {
+    const intl = cardText.match(CARD_PHONE_INTL_RE);
+    if (intl && V.isPlausiblePhone(intl[0])) return intl[0].trim();
+
+    const na = cardText.match(CARD_PHONE_NA_RE);
+    if (na && V.isPlausiblePhone(na[0])) return na[0].trim();
+  }
 
   return '';
 }

@@ -1,5 +1,77 @@
 # Changelog
 
+## 4.3.0 — reliable phone extraction, simplified field selection, filter-before-export
+
+A targeted correction on top of the card-first collection engine (unchanged
+by this release) and the 4.2.0 UI redesign (also unchanged, aside from the
+Home screen's field picker). Scope: `src/collector/card-parser.js`,
+`src/collector/selectors.js`, `src/core/constants.js`, `src/engines/filters.js`,
+`src/sidepanel/views/home.js`, `src/sidepanel/views/export.js` and
+`src/sidepanel/styles.css`. Nothing in the queue, recovery, storage,
+deduplication, enrichment engine, export format code or Google Sheets
+integration changed.
+
+### Fixed — phone numbers missed even when Google Maps visibly showed them
+`card-parser.js:extractCardPhone()` only ever looked for a dedicated phone
+*control* on the results card (`data-item-id^="phone:tel:"` / `tel:` href /
+a `data-tooltip="Copy phone number"` button). Google frequently prints the
+number as **plain visible text** on the card instead — often sharing a line
+with the hours/status row — with no button, no `data-item-id`, no `tel:`
+href at all. The old, previously-working extension had exactly this case
+covered with a regex fallback over the card's text; the card-first rewrite
+in 4.1.0 carried over the selector-based path but dropped that fallback.
+- `extractCardPhone()` now falls back to two anchored text patterns — an
+  international one requiring a literal `+` prefix (so it can never match a
+  street number, ZIP or price) and the North-American 3-3-4 grouping — only
+  when no selector-based element resolved a value. The selector-based path
+  is unchanged and still wins when it succeeds.
+- `selectors.js:CARD_PHONE` gained two more selector variants
+  (`data-tooltip="Copy phone number"`, `aria-label^="Phone:"`) mirroring
+  what `place-detail.js` already tries at the detail-panel level.
+- `parseCategoryAndAddressLine()` now defensively strips a trailing
+  phone-shaped run of text from the address line, and drops Category or
+  Address outright if either turns out to be nothing but a phone number —
+  belt-and-suspenders against the number leaking into the wrong field.
+- Verified end-to-end in `tools/run-tests.mjs`'s 51-business synthetic test:
+  16 of 51 businesses now render their phone as plain text only (no
+  button), and all 16 are extracted correctly, matching Google Maps
+  character-for-character (e.g. `+1 770-368-0005` stays exactly that).
+- Detail resolution (`place-detail.js`/`detail-resolver.js`) was already
+  correct and is unchanged — it already fetches every record still missing
+  Full Address, Website or Phone regardless of whether the business has a
+  website, via the existing same-origin fetch through the Maps tab. No tab
+  is opened for this before or after this release.
+
+### Changed — no more Fast / Standard / Advanced picker
+The Home screen no longer asks the user to choose an extraction mode.
+- `home.js` dropped `renderModeCard`/`MODE_INFO` and the `[data-mode]`
+  handler entirely. The underlying `MODE`/`MODE_NEEDS_DETAIL` mechanism in
+  `core/constants.js` is untouched and stays fixed at Standard internally
+  (detail resolution always runs), so no scraping behavior changed — only
+  the picker is gone.
+- The field picker is now two fixed sections: **Default fields** (Business
+  Name, Website, Phone Number, Address, Rating, Reviews — shown checked and
+  locked, always collected, no way to turn them off) and **Additional
+  fields** (Full Address, Email, Facebook, Instagram, LinkedIn, TikTok,
+  YouTube, X/Twitter, Maps URL, Latitude, Longitude — opt-in checkboxes,
+  unchanged mechanism). `FIELDS[].default` flags in `core/constants.js`
+  were updated to match; a new `DEFAULT_FIELD_KEYS` export is the single
+  source of truth both the render and the save handler use, and the save
+  handler always unions those six keys back in so a legacy settings object
+  can never lose them.
+
+### Changed — filters get more complete, export can bypass them
+- `engines/filters.js:AVAILABILITY` gained `Has Address` / `No Address`
+  (the short street line collected by default now warrants its own filter,
+  distinct from the existing Full-Address-specific pair) and `Has TikTok` /
+  `Has YouTube`, alongside the existing Website/Phone/Email/Facebook/
+  Instagram/LinkedIn/coordinates toggles. `filter.js`'s chip UI already
+  renders `AVAILABILITY` generically, so these appeared with no view change.
+- The Export screen now shows **Total records** and **Filtered records** as
+  two distinct stats, and — whenever a filter is active — offers both
+  "Export N Filtered" and "Export All N" for CSV and Excel, so filtering
+  never forces exporting everything or nothing.
+
 ## 4.2.0 — presentation-layer redesign
 
 A UI/UX-only pass over the side panel. Nothing under `src/collector/`,

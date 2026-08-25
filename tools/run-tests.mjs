@@ -225,6 +225,62 @@ group('Website/phone read directly off the results card — no tab, no fetch');
 }
 
 /* ================================================================== */
+group('Phone text fallback — no button/tel: element on the card');
+
+{
+  const { makeCard } = await import('./harness/mini-dom.mjs');
+
+  // Google does not always render a dedicated phone control on the compact
+  // results card; sometimes the number is only visible as plain text. This
+  // is exactly what a previous, working extraction relied on and what this
+  // card-first rewrite was initially missing.
+  const usText = makeCard({
+    name: 'ABC Roofing', category: 'Roofing contractor', rating: '4.7', reviews: '169',
+    street: '6215-1 Wilson Blvd Building 1', phoneText: '+1 770-368-0005',
+  });
+  check('a plain-text US phone (with +1) is found via the text fallback',
+    cardParser.extractCardPhone(usText) === '+1 770-368-0005');
+
+  const usTextNoCountry = makeCard({
+    name: 'XYZ Plumbing', category: 'Plumber', rating: '4.3', reviews: '58',
+    street: '900 Bay St', phoneText: '(904) 555-1234',
+  });
+  check('a plain-text US phone (no country code) is found via the text fallback',
+    cardParser.extractCardPhone(usTextNoCountry) === '(904) 555-1234');
+
+  const intlText = makeCard({
+    name: 'Islamabad Electricians', category: 'Electrician', rating: '4.5', reviews: '22',
+    street: 'Shop 4, Blue Area', phoneText: '+92 51 111 2233',
+  });
+  check('a plain-text international phone is found via the text fallback',
+    cardParser.extractCardPhone(intlText) === '+92 51 111 2233');
+
+  const recNoBtn = cardParser.parseCard(usText, 1);
+  check('parseCard carries the text-fallback phone through', recNoBtn.phone === '+1 770-368-0005');
+  check('the text-fallback phone never leaks into address',
+    recNoBtn.address === '6215-1 Wilson Blvd Building 1');
+  check('the text-fallback phone never leaks into category', recNoBtn.category === 'Roofing contractor');
+
+  // The button/data-item-id path still wins when both are present — the
+  // text fallback only fires when nothing else resolved a value.
+  const both = makeCard({
+    name: 'Both Sources Co', category: 'Contractor', rating: '4.8', reviews: '90',
+    street: '1 Main St', phone: '+1 904-000-1111', phoneText: '+1 904-999-8888',
+  });
+  check('a dedicated phone control still wins over the text fallback',
+    cardParser.extractCardPhone(both) === '+1 904-000-1111');
+
+  // Ordinary card text (name, rating, review count, hours, a hyphenated
+  // street number) must never be misread as a phone number.
+  const noPhoneAtAll = makeCard({
+    name: 'No Phone Listed LLC', category: 'General contractor', rating: '4.9', reviews: '1234',
+    street: '6215-1 Wilson Blvd',
+  });
+  check('a card with no phone anywhere yields blank, not a false positive',
+    cardParser.extractCardPhone(noPhoneAtAll) === '');
+}
+
+/* ================================================================== */
 group('Place detail — same-origin fetch, no tab (extraction logic)');
 
 {
@@ -865,16 +921,26 @@ group('End-to-end: 51 businesses, fast collection + missing-field-only detail re
   const truth = []; // what each synthetic business "really" has, for grading
 
   for (let i = 0; i < TOTAL; i++) {
-    const hasWebsite = i % 10 !== 3;              // 46/51 — most cards expose it
-    const hasPhone = i % 12 !== 5;                 // 47/51 — most cards expose it
+    const hasWebsite = i % 10 !== 3;               // 46/51 — most cards expose it
+    // i === 3 deliberately has NEITHER website nor phone on the card — a
+    // lead with no web presence at all, which must still be collected, not
+    // discarded, and still get everything else Phase 2 can find.
+    const hasPhone = i % 12 !== 5 && i !== 3;
+    // About a third of the phones Google DOES expose are rendered as plain
+    // visible text on the card rather than a dedicated button/tel: element —
+    // exactly the case the phone-extraction fix (card-parser.js) had to stop
+    // missing. The rest keep the button-based path, unchanged.
+    const phoneViaText = hasPhone && i % 3 === 0;
     const name = `${names[i % names.length]} Co ${i + 1}`;
     const website = hasWebsite ? `https://business${i}.example.com` : '';
-    const phone = hasPhone ? `+1 904 555 ${String(1000 + i).slice(-4)}` : '';
+    const phoneValue = hasPhone ? `+1 904 555 ${String(1000 + i).slice(-4)}` : '';
+    const phone = hasPhone && !phoneViaText ? phoneValue : '';
+    const phoneText = hasPhone && phoneViaText ? phoneValue : '';
     cards.push(makeCard({
       name, category: names[i % names.length], rating: (4 + (i % 10) / 10).toFixed(1),
-      reviews: String(5 + i * 3), street: `${100 + i} Test Ave`, website, phone,
+      reviews: String(5 + i * 3), street: `${100 + i} Test Ave`, website, phone, phoneText,
     }));
-    truth.push({ name, hasWebsite, hasPhone });
+    truth.push({ name, hasWebsite, hasPhone, phoneViaText });
   }
 
   collector.reset();
@@ -907,6 +973,25 @@ group('End-to-end: 51 businesses, fast collection + missing-field-only detail re
     sitedPhase1 === expectedSites, `${sitedPhase1}/${TOTAL} (expected ${expectedSites})`);
   check('phone found directly in Phase 1 matches what the cards exposed',
     phonedPhase1 === expectedPhones, `${phonedPhase1}/${TOTAL} (expected ${expectedPhones})`);
+
+  // Plain-text-only phones (no button, no data-item-id, no tel: href) —
+  // exactly the case that was previously missed — must be read correctly
+  // too, matching the number character-for-character.
+  const textFallbackTruth = truth.filter((t) => t.phoneViaText);
+  const textFallbackFound = textFallbackTruth.filter((t) => {
+    const rec = phase1.records.find((r) => r.businessName === t.name);
+    return rec && rec.phone && /^\+1 904 555 \d{4}$/.test(rec.phone);
+  });
+  check(`plain-text phone numbers (no button on the card) all extracted correctly (${textFallbackTruth.length} businesses)`,
+    textFallbackFound.length === textFallbackTruth.length,
+    `${textFallbackFound.length}/${textFallbackTruth.length}`);
+
+  // A business with neither website nor phone on the card is still a lead —
+  // it must be collected, not silently dropped.
+  const noWebNoPhone = phase1.records.find((r) => r.businessName === truth[3].name);
+  check('a business with no website AND no phone on the card is still collected, not discarded',
+    !!noWebNoPhone && noWebNoPhone.website === '' && noWebNoPhone.phone === '');
+
   check('full address is NOT invented in Phase 1 — Maps cards never show it',
     phase1.records.every((r) => r.fullAddress === ''));
   check('zero technical errors from a clean 51-card collection',
@@ -960,24 +1045,31 @@ group('End-to-end: 51 businesses, fast collection + missing-field-only detail re
   check('no technical errors from a clean Phase 2 run',
     (resolved.stats.technicalErrors || []).length === 0, JSON.stringify(resolved.stats.technicalErrors));
 
+  // The no-website/no-phone business from Phase 1 must have BOTH recovered
+  // by detail resolution — no website is never a reason to skip a business.
+  const recoveredLead = resolved.records.find((r) => r.businessName === truth[3].name);
+  check('the no-website business still gets its phone AND address resolved via detail fetch',
+    !!recoveredLead && !!recoveredLead.phone && !!recoveredLead.fullAddress);
+
   console.log('\n  ' + '='.repeat(58));
   console.log('  51-BUSINESS TEST REPORT (synthetic harness — see note above)');
   console.log('  ' + '='.repeat(58));
-  console.log(`  Total businesses collected      : ${phase1.records.length}`);
-  console.log(`  Phase 1 collection time         : ${phase1Ms} ms`);
-  console.log(`  Business Name found             : ${named}/${TOTAL}`);
-  console.log(`  Category found                  : ${categorized}/${TOTAL}`);
-  console.log(`  Rating found                    : ${rated}/${TOTAL}`);
-  console.log(`  Reviews found                   : ${reviewed}/${TOTAL}`);
-  console.log(`  Address (street) found          : ${addressed}/${TOTAL}`);
-  console.log(`  Full Address found (after P2)   : ${fullAddressFound}/${TOTAL}`);
-  console.log(`  Website found in Phase 1 (card) : ${sitedPhase1}/${TOTAL}`);
-  console.log(`  Phone found in Phase 1 (card)   : ${phonedPhase1}/${TOTAL}`);
-  console.log(`  Phase 2 fetches performed       : ${phase2Fetches}`);
-  console.log(`  Phase 2 time                    : ${phase2Ms} ms`);
-  console.log(`  Individual business tabs opened : ${tabsCreated}`);
-  console.log(`  Technical errors (P1 + P2)      : ${phase1.ended.counts.technicalErrors + (resolved.stats.technicalErrors || []).length}`);
-  console.log(`  Records saved                   : ${resolved.records.length}`);
+  console.log(`  Businesses collected             : ${phase1.records.length}`);
+  console.log(`  Business Name                    : ${named}/${TOTAL}`);
+  console.log(`  Category                         : ${categorized}/${TOTAL}`);
+  console.log(`  Rating                           : ${rated}/${TOTAL}`);
+  console.log(`  Reviews                          : ${reviewed}/${TOTAL}`);
+  console.log(`  Address                          : ${addressed}/${TOTAL}`);
+  console.log(`  Full Address (after detail pass) : ${fullAddressFound}/${TOTAL}`);
+  console.log(`  Website                          : ${sitedAfter}/${TOTAL} (${sitedPhase1}/${TOTAL} straight off the card)`);
+  console.log(`  Phone                            : ${phonedAfter}/${TOTAL} (${phonedPhase1}/${TOTAL} straight off the card)`);
+  console.log(`    of which via plain-text fallback (no button on the card) : ${textFallbackFound.length}/${textFallbackTruth.length}`);
+  console.log(`  Business with no website on the card, still collected + resolved : "${recoveredLead.businessName}"`);
+  console.log(`  Technical errors                 : ${phase1.ended.counts.technicalErrors + (resolved.stats.technicalErrors || []).length}`);
+  console.log(`  Individual business tabs opened  : ${tabsCreated}`);
+  console.log(`  Phase 1 collection time          : ${phase1Ms} ms`);
+  console.log(`  Phase 2 (detail resolution) time : ${phase2Ms} ms (${phase2Fetches} fetches)`);
+  console.log(`  Records saved                    : ${resolved.records.length}`);
   console.log('  ' + '='.repeat(58) + '\n');
 
   globalThis.chrome = undefined;
