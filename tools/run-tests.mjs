@@ -1276,6 +1276,48 @@ group('Address — card layouts without a middot-combined line');
 }
 
 /* ================================================================== */
+group('Address — amenity/accessibility badge between category and street');
+
+{
+  // Real-world bug, seen in an actual export: Google Maps sometimes inserts
+  // a THIRD middot segment between category and street — an amenity or
+  // accessibility badge ("Wheelchair accessible entrance") that is often
+  // ICON-ONLY, with no visible text label at all, just one glyph from a
+  // private-use-area ligature font. The old code took the first non-hours
+  // segment unconditionally and grabbed that icon glyph as if it were the
+  // address — which is exactly the unreadable "" seen in the spreadsheet.
+  const badgeGlyph = String.fromCodePoint(0xE001);
+
+  const withBadge = `Al-Aqsa Roofing\n4.6 (37)\nRoofing contractor · ${badgeGlyph} · 3850 W Rincon Ave\nOpen ⋅ Closes 5 PM`;
+  const parsed = cardParser.parseCategoryAndAddressLine(withBadge);
+  check('the street is found even with an icon-only badge segment in between',
+    parsed.addressLine === '3850 W Rincon Ave', JSON.stringify(parsed));
+  check('the icon glyph never ends up as the address', !validators.isPlausibleAddressLine(badgeGlyph));
+  check('the category is still correctly read (unaffected by the badge)', parsed.category === 'Roofing contractor');
+
+  // A badge with a digit in it (e.g. "2 accessible spots") must ALSO be
+  // rejected in favor of the real street — a bare digit alone is not
+  // enough to prove something is an address once an icon glyph is present.
+  const badgeWithDigit = `Al-Aqsa Roofing\n4.6 (37)\nRoofing contractor · ${badgeGlyph} 2 spots · 3850 W Rincon Ave`;
+  const parsed2 = cardParser.parseCategoryAndAddressLine(badgeWithDigit);
+  check('a digit-bearing badge is still rejected in favor of the real street',
+    parsed2.addressLine === '3850 W Rincon Ave', JSON.stringify(parsed2));
+
+  // No real street anywhere on the card: must stay blank, never guess the badge.
+  const badgeOnly = `Al-Aqsa Roofing\n4.6 (37)\nRoofing contractor · ${badgeGlyph}\nOpen ⋅ Closes 5 PM`;
+  const parsed3 = cardParser.parseCategoryAndAddressLine(badgeOnly);
+  check('with no real street on the card, address stays blank rather than showing the badge glyph',
+    parsed3.addressLine === '', JSON.stringify(parsed3));
+
+  // The category-fallback path (no middot line at all) must reject an
+  // icon-only line the same way.
+  const iconAsCategoryLine = `Some Business\n4.6 (37)\n${badgeGlyph}\n900 Bay St`;
+  const parsed4 = cardParser.parseCategoryAndAddressLine(iconAsCategoryLine);
+  check('an icon-only line is never picked as the category either',
+    parsed4.category !== badgeGlyph, JSON.stringify(parsed4));
+}
+
+/* ================================================================== */
 group('Enrichment — busy state reflects reality, not a note string');
 
 {

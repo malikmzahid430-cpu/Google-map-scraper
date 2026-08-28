@@ -138,7 +138,15 @@ export function parseCategoryAndAddressLine(bodyText) {
     // A category never contains a street number at its head.
     if (!/^\d/.test(first) && first.length < 60 && !out.category) out.category = first;
 
-    const rest = parts.slice(1).find((p) => p && !/^(open|closed|opens|closes)/i.test(p));
+    // The street address isn't always the very next segment after category —
+    // Google sometimes inserts an amenity/accessibility badge between them
+    // ("Wheelchair accessible entrance", "Dine-in"), often icon-only with no
+    // visible label at all. Blindly taking the first non-hours segment used
+    // to grab that badge instead of the real address; require the segment
+    // to actually look like a street (digit or street-suffix word, no
+    // icon-font glyph) before accepting it.
+    const rest = parts.slice(1).find((p) =>
+      p && !/^(open|closed|opens|closes|temporarily|permanently)/i.test(p) && V.isPlausibleAddressLine(p));
     if (rest && !out.addressLine) out.addressLine = rest;
     if (out.category) break;
   }
@@ -151,7 +159,8 @@ export function parseCategoryAndAddressLine(bodyText) {
     // afterwards meant this fallback matched the name, rejected it, and
     // then gave up — never reaching whatever line actually was the category.
     const cand = lines.find(
-      (l, idx) => idx !== 0 && !/[\d]/.test(l.slice(0, 3)) && l.length < 45 && !/^(open|closed|·)/i.test(l),
+      (l, idx) => idx !== 0 && !/[\d]/.test(l.slice(0, 3)) && l.length < 45
+        && !/^(open|closed|·)/i.test(l) && !V.hasIconGlyph(l),
     );
     if (cand) out.category = cand;
   }

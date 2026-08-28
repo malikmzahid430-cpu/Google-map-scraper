@@ -1,5 +1,48 @@
 # Changelog
 
+## 4.5.1 — fix Address corrupted by icon-only amenity badges
+
+Found from a real export: the Address column showed an unreadable `` box
+for many rows instead of a street or a blank. Scope:
+`src/collector/card-parser.js`, `src/collector/validators.js`.
+
+### Fixed
+Google Maps result cards sometimes insert a THIRD middot-separated segment
+between category and street — an amenity or accessibility badge ("Wheelchair
+accessible entrance", "Dine-in") that is frequently **icon-only**, with no
+visible text label, just one glyph from a private-use-area ligature font.
+`card-parser.js:parseCategoryAndAddressLine()` took the first non-hours
+segment after category unconditionally, so on cards with this badge it
+grabbed the icon glyph instead of the real street address — the unreadable
+box seen in the export. Two fixes:
+- `validators.js:isPlausibleAddressLine()` now rejects any string containing
+  a private-use-area / icon-font codepoint outright, even if it also
+  contains a digit (a badge like "2 accessible spots" would otherwise still
+  have passed).
+- The primary category/address extraction now requires the segment it picks
+  to actually pass `isPlausibleAddressLine()`, searching past a badge
+  segment to find the real street wherever it is — and leaving Address
+  blank rather than guessing when no segment on the card looks like one.
+  The same guard was applied to the category-detection fallback.
+
+Verified with a direct regression test reproducing the exact case (category
+· icon-only badge · street) plus the badge-with-a-digit and no-real-street
+variants; the address-line-on-separate-rows fallback added in 4.3.0 and the
+combined (middot) layout are both unaffected. 276/276 tests pass.
+
+### Still open — Full Address empty across an entire dataset
+A separate report: Full Address was blank for every record in an exported
+job, not just some. This fix does not address that on its own. The most
+likely causes are either detail resolution never running for that
+particular job (its `mode` may predate the 4.3.0 UI change, if the job was
+collected before that update) or every resolution attempt failing as a
+technical error (closed Maps tab, lost content-script connection). Next
+step: open the **Enrich** tab for that job — if it offers "Resolve details
+for N record(s)", click it (this button bypasses any mode gating and always
+attempts resolution); if it already says "All records already resolved",
+check the **Diagnostics** tab's technical-error and Full-Address-parser
+sections for what's actually failing.
+
 ## 4.5.0 — layered Full Address, enrichment lifecycle (pause/resume/stop, missing-only, caching)
 
 Scope: `src/collector/address.js`, `src/collector/detail-parser.js`,

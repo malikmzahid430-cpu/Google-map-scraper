@@ -62,6 +62,18 @@ export function isPlausiblePhone(v) {
 
 /* ---------------------------- ADDRESS ---------------------------- */
 
+/**
+ * A single glyph from a private-use-area icon font, rather than real text.
+ * Google Maps cards often show amenity/accessibility badges ("Wheelchair
+ * accessible entrance", "Dine-in") as an ICON ONLY — no visible label, just
+ * one character from a ligature font mapped into a Unicode private-use
+ * range. That glyph is unrenderable garbage everywhere outside the site
+ * that shipped the font, and must never be mistaken for address text.
+ */
+export function hasIconGlyph(v) {
+  return /[\uE000-\uF8FF]|[\u{F0000}-\u{FFFFD}]|[\u{100000}-\u{10FFFD}]/u.test(String(v || ''));
+}
+
 /** A street line: has some digits or a recognisable street word, and no @. */
 export function isPlausibleAddressLine(v) {
   if (!isString(v)) return false;
@@ -69,6 +81,7 @@ export function isPlausibleAddressLine(v) {
   if (s.length < 4 || s.length > 300) return false;
   if (s.includes('@') || /^https?:\/\//i.test(s)) return false;
   if (isPlausiblePhone(s)) return false;               // never accept a phone as an address
+  if (hasIconGlyph(s)) return false;                    // an icon-only badge, not a street
   return /\d/.test(s) || /\b(st|street|rd|road|ave|avenue|blvd|ln|lane|dr|drive|way|hwy|suite|unit|floor)\b/i.test(s);
 }
 
