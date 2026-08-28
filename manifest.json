@@ -1,5 +1,6 @@
 {
   "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1GhDyUW7FeNP6/QNcZKsvibbf2PXMSmYhz4NtpFpwPAgd87WjwGGBqh3T35+mFSAFOMFIJsTZVskq8XlHM9mG9pZvjwx+qHsNS62jtGXwA545OhQRvy7cDTHhUQfzQW2VOZZp6F6UfsRSQRcsdjgBSYw2+Da6ZLInd5YaJ6Is6wYjbipn1E1O62EL8nTNDHBKlqUJipI/yJiY2xZHZxq7Q5FqlEvXIuLi06FGXI2YZQ+61Jj8ThuvWXDxmXdFKnoDK/OoF1b4Ybq4xvr91nHIaB8IG+I3UcnfoHXXAQui1jULbrZp4ArETnOGmhVP75Nv5601b1ThphwqyLAlwYjGQIDAQAB",
   "name": "Al-Aqsa Scraper",
   "version": "4.5.0",
   "description": "Professional Google Maps lead-generation scraper. One-screen collection, fast card-first scraping with no per-business tabs, optional missing-field-only detail resolution and enrichment, deduplication, scoring and export to CSV, Excel or Google Sheets.",
@@ -121,7 +122,7 @@
     "https://*/*"
   ],
   "oauth2": {
-    "client_id": "926274171069-6iddlvvhjfatmagd496c8og8tc9ge0cc.apps.googleusercontent.com",
+    "client_id": "PASTE_YOUR_OAUTH_CLIENT_ID_HERE.apps.googleusercontent.com",
     "scopes": [
       "https://www.googleapis.com/auth/spreadsheets",
       "https://www.googleapis.com/auth/drive.file"
