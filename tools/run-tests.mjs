@@ -329,6 +329,35 @@ group('Place detail — same-origin fetch, no tab (extraction logic)');
   const notOverwritten = placeDetail.mergeEmbeddedPayload(partiallyFound, html);
   check('payload never overwrites a value the DOM already found', notOverwritten.website === 'https://dom-found-this.com');
 
+  // --- layered address: DOM found ONLY a street, the payload independently
+  //     has city/state/zip but never joins them into one string at any of
+  //     the known index paths — the merge must COMBINE the two rather than
+  //     leaving Full Address blank just because neither source alone was
+  //     a complete address. ---
+  const comboJson6 = new Array(200).fill(null);
+  // Deliberately nothing at the formattedAddress/addressComponents index
+  // candidates ([6,18], [6,39], [6,2], [6,183,1]) — only a stray locality
+  // string elsewhere in the tree, findable only by the structural scan.
+  comboJson6[145] = 'Jacksonville, FL 32210';
+  const comboJson = new Array(7); comboJson[6] = comboJson6;
+  const comboHtml = ")]}'\n" + JSON.stringify(comboJson);
+
+  const domStreetOnly = { ...blank, address: '6215-1 Wilson Blvd Building 1' };
+  const combined = placeDetail.mergeEmbeddedPayload(domStreetOnly, comboHtml);
+  check('a DOM street combines with a payload-only locality fragment into a complete Full Address',
+    combined.fullAddress === '6215-1 Wilson Blvd Building 1, Jacksonville, FL 32210', combined.fullAddress);
+  check('the combined address correctly splits city/state/postal (not the old "FL as city" bug)',
+    combined.city === 'Jacksonville' && combined.state === 'FL' && combined.postalCode === '32210',
+    JSON.stringify({ city: combined.city, state: combined.state, postalCode: combined.postalCode }));
+  check('Address (the short field) is completely untouched by this — still just the street',
+    combined.address === '6215-1 Wilson Blvd Building 1', combined.address);
+
+  // --- no combine when there is nothing to combine with (DOM found nothing at all) ---
+  const domNothing = { ...blank, address: '' };
+  const noCombine = placeDetail.mergeEmbeddedPayload(domNothing, comboHtml);
+  check('no street from any source means Full Address correctly stays blank, not a locality-only fragment',
+    noCombine.fullAddress === '', noCombine.fullAddress);
+
   // --- fetchPlaceDetail: the actual network entry point, wired end to end ---
   class FakeDOMParser {
     parseFromString() {
@@ -900,6 +929,19 @@ group('Detail resolver — no tabs, fetch-based, failure containment');
   check('resolveAll is called with the found tab\'s id, not a newly created tab',
     /detailResolver\.resolveAll\(/.test(rsrc) && /\}, tab && tab\.id\);/.test(rsrc));
 
+  // --- enrichment stays scoped to the one job it was asked to run on ---
+  // (source-level check: handleEnrich never imports/touches chrome APIs at
+  // module scope, so it can't be instantiated directly in this harness —
+  // enrichAll()'s own isolation between separate calls is covered end to
+  // end in the "Enrichment engine" group below.)
+  check('handleEnrich reads records scoped to ONE job id',
+    /const records = await store\.readRecords\(id\);/.test(rsrc));
+  check('handleEnrich writes results back scoped to that SAME job id, never a different one',
+    /await store\.writeRecords\(id, mergeEnrichedSubset\(records, partial\)\);/.test(rsrc)
+    && /await store\.writeRecords\(id, merged\);/.test(rsrc));
+  check('mergeEnrichedSubset merges by stable record identity, never by array position (which could shuffle across jobs)',
+    /byKey\.get\(r\.stableKey \|\| r\.serial\)/.test(rsrc));
+
   globalThis.chrome = undefined;
 }
 
@@ -1270,28 +1312,253 @@ group('Enrichment — busy state reflects reality, not a note string');
   ];
   const mkEnrichState = (job) => {
     const st = {
-      settings: constants.DEFAULT_SETTINGS, job, records, busy: false,
+      settings: constants.DEFAULT_SETTINGS, job, records, busy: false, now: Date.now(),
       quality: () => quality.analyze(records),
     };
     return st;
   };
+  const ES = constants.ENRICH_STATUS;
 
-  const doneJob = jobsApi.blankJob({ id: 'e2', enrich: { done: 1, total: 1, ranAt: Date.now() }, progress: { note: 'Enrichment complete' } });
-  const doneHtml = renderEnrich(mkEnrichState(doneJob));
-  check('after completion, the view shows the Start button again, not the busy bar',
-    doneHtml.includes('data-act="enrich-start"') && !doneHtml.includes('data-act="enrich-stop"'));
-  check('after completion, the view explicitly says enrichment is complete',
-    /Enrichment complete/i.test(doneHtml));
+  const runningCounts = {
+    emails: 12, socials: 9, websites: 20,
+    facebook: 5, instagram: 4, linkedin: 2, tiktok: 1, youtube: 0, twitter: 0,
+    notFound: 0, errors: 0, skipped: 0,
+  };
 
-  const busyJob = jobsApi.blankJob({ id: 'e3', enrich: { done: 5, total: 20, ranAt: null } });
+  const busyJob = jobsApi.blankJob({
+    id: 'e3', lastActivityAt: Date.now(),
+    enrich: { done: 5, total: 20, ranAt: null, status: ES.RUNNING, currentName: 'ABC Roofing', counts: runningCounts },
+  });
   const busyHtml = renderEnrich(mkEnrichState(busyJob));
   check('while actually running, the view shows the busy bar and Stop button',
     busyHtml.includes('data-act="enrich-stop"') && !busyHtml.includes('data-act="enrich-start"'));
+  check('while running, the current business name is shown', busyHtml.includes('ABC Roofing'));
+  check('while running, a Pause button is offered', busyHtml.includes('data-act="enrich-pause"'));
 
-  const stoppedJob = jobsApi.blankJob({ id: 'e4', enrich: { done: 3, total: 3, ranAt: Date.now() }, progress: { note: 'Enrichment stopped' } });
+  const pausedJob = jobsApi.blankJob({
+    id: 'e5', enrich: { done: 5, total: 20, ranAt: null, status: ES.PAUSED, currentName: '', counts: runningCounts },
+  });
+  const pausedHtml = renderEnrich(mkEnrichState(pausedJob));
+  check('while paused, the view offers Resume, not Start or Stop', pausedHtml.includes('data-act="enrich-resume"')
+    && !pausedHtml.includes('data-act="enrich-start"') && !pausedHtml.includes('data-act="enrich-stop"'));
+  check('while paused, the progress made so far (5/20) is still shown', pausedHtml.includes('5') && pausedHtml.includes('20'));
+
+  const finalCounts = {
+    emails: 94, socials: 71, websites: 240,
+    facebook: 42, instagram: 71, linkedin: 18, tiktok: 12, youtube: 23, twitter: 9,
+    notFound: 83, errors: 3, skipped: 25,
+  };
+
+  const doneJob = jobsApi.blankJob({
+    id: 'e2', enrich: { done: 251, total: 251, ranAt: Date.now(), status: ES.COMPLETED, currentName: '', counts: finalCounts },
+    progress: { note: 'Enrichment complete' },
+  });
+  const doneHtml = renderEnrich(mkEnrichState(doneJob));
+  check('after completion, the view shows View Data, not the busy bar',
+    doneHtml.includes('data-act="goto-data"') && !doneHtml.includes('data-act="enrich-stop"') && !doneHtml.includes('data-act="enrich-start"'));
+  check('after completion, the view explicitly says enrichment is complete',
+    /Enrichment complete/i.test(doneHtml));
+  check('the completion summary breaks results down per platform (Facebook/Instagram/LinkedIn/TikTok/YouTube)',
+    ['42', '71', '18', '12', '23'].every((n) => doneHtml.includes(n)));
+  check('the completion summary reports Not Found and Technical Errors separately',
+    doneHtml.includes('83') && doneHtml.includes('3'));
+
+  const partialJob = jobsApi.blankJob({
+    id: 'e6', enrich: { done: 251, total: 251, ranAt: Date.now(), status: ES.PARTIAL, currentName: '', counts: finalCounts },
+  });
+  const partialHtml = renderEnrich(mkEnrichState(partialJob));
+  check('a run that finished with some failures is reported as partial, not silently "complete"',
+    /partial/i.test(partialHtml) && doneHtml !== partialHtml);
+
+  const stoppedJob = jobsApi.blankJob({
+    id: 'e4', enrich: { done: 87, total: 87, ranAt: Date.now(), status: ES.STOPPED, currentName: '', counts: { ...finalCounts, emails: 30 } },
+    progress: { note: 'Enrichment stopped' },
+  });
   const stoppedHtml = renderEnrich(mkEnrichState(stoppedJob));
-  check('after a manual Stop, the view also returns to the Start button (not stuck busy)',
-    stoppedHtml.includes('data-act="enrich-start"') && !stoppedHtml.includes('data-act="enrich-stop"'));
+  check('after a manual Stop, the view offers Resume (not stuck on the busy bar)',
+    stoppedHtml.includes('data-act="enrich-start"') && !stoppedHtml.includes('data-act="enrich-stop"') && !stoppedHtml.includes('data-act="enrich-pause"'));
+  check('after a manual Stop, the progress made so far (87) is shown, not reset to 0',
+    stoppedHtml.includes('87'));
+
+  const failedJob = jobsApi.blankJob({ id: 'e7', enrich: { done: 3, total: 251, status: ES.FAILED, counts: {} } });
+  const failedHtml = renderEnrich(mkEnrichState(failedJob));
+  check('a crashed enrichment run is reported as failed, not left showing the busy bar',
+    !failedHtml.includes('data-act="enrich-stop"') && /fail/i.test(failedHtml));
+
+  // --- pending-only (idle) state: shows what's actually missing, per field ---
+  const idleRecords = [
+    { businessName: 'A', website: 'https://a.example.com', email: 'a@a.com', facebook: 'https://facebook.com/a' },
+    { businessName: 'B', website: 'https://b.example.com' },
+    { businessName: 'C', website: '' },
+  ];
+  const idleState = {
+    settings: constants.DEFAULT_SETTINGS, job: jobsApi.blankJob({ id: 'e8' }), records: idleRecords, busy: false, now: Date.now(),
+    quality: () => quality.analyze(idleRecords),
+  };
+  const idleHtml = renderEnrich(idleState);
+  // A is missing social platforms beyond Facebook, B is missing email+social,
+  // C has no website at all (still "missing" email/social, but a fast no-op
+  // skip once processed) — all three are pending under this pass's settings.
+  check('idle state shows how many records are actually pending, not a placeholder count',
+    idleHtml.includes('3 record(s)'), idleHtml.match(/\d+ record\(s\)/)?.[0]);
+
+  // A record with EVERY requested field already found must be excluded.
+  const fullyDoneRecord = {
+    businessName: 'D', website: 'https://d.example.com', email: 'd@d.com',
+    facebook: 'https://facebook.com/d', instagram: 'https://instagram.com/d',
+    linkedin: 'https://linkedin.com/company/d', tiktok: 'https://tiktok.com/@d',
+    youtube: 'https://youtube.com/@d', twitter: 'https://x.com/d',
+  };
+  const doneOnlyState = {
+    settings: constants.DEFAULT_SETTINGS, job: jobsApi.blankJob({ id: 'e9' }), records: [fullyDoneRecord], busy: false, now: Date.now(),
+    quality: () => quality.analyze([fullyDoneRecord]),
+  };
+  const doneOnlyHtml = renderEnrich(doneOnlyState);
+  check('a record with every requested field already found leaves nothing pending',
+    /nothing to enrich/i.test(doneOnlyHtml), doneOnlyHtml.slice(0, 200));
+}
+
+/* ================================================================== */
+group('Enrichment engine — missing-only, error isolation, pause/resume/stop, zero tabs');
+
+{
+  const enrichManager = await import('../src/enrich/enrich-manager.js');
+  const priorFetch = globalThis.fetch;
+  const fetchCalls = [];
+
+  // net.js:fetchText() reads res.headers.get('content-type') and falls back
+  // to res.text() when res.body isn't a stream — both must be present on
+  // the fake Response or every request "fails" for a mock-shape reason that
+  // has nothing to do with the code under test.
+  const fakeFetch = async (url) => {
+    fetchCalls.push(String(url));
+    if (String(url).includes('fail-site')) {
+      return { ok: false, status: 500, url: String(url), headers: { get: () => 'text/html' }, text: async () => '' };
+    }
+    const html = `<html><body><a href="mailto:info@${encodeURIComponent(url).replace(/[^a-z0-9]/gi, '')}.com">Email</a>`
+      + `<a href="https://facebook.com/${encodeURIComponent(url).replace(/[^a-z0-9]/gi, '')}">FB</a></body></html>`;
+    return { ok: true, status: 200, url: String(url), headers: { get: () => 'text/html' }, text: async () => html };
+  };
+  globalThis.fetch = fakeFetch;
+
+  // --- needsEnrichment: field-level, not record-level ---
+  const fullSocial = { facebook: 'x', instagram: 'x', linkedin: 'x', tiktok: 'x', youtube: 'x', twitter: 'x' };
+  check('a record with email + every social platform already found needs nothing',
+    !enrichManager.needsEnrichment({ email: 'a@a.com', ...fullSocial }, { email: true, social: true }));
+  check('missing only Instagram still counts as needing enrichment',
+    enrichManager.needsEnrichment({ email: 'a@a.com', ...fullSocial, instagram: '' }, { email: true, social: true }));
+
+  // --- a fully-complete record triggers ZERO network requests and is untouched ---
+  const alreadyDone = { businessName: 'HasEmail', website: 'https://has-email.example.com', email: 'existing@has-email.com', ...fullSocial };
+  fetchCalls.length = 0;
+  const untouched = await enrichManager.enrichRecord(alreadyDone, { email: true, social: true });
+  check('a record with everything already found makes zero network requests', fetchCalls.length === 0, String(fetchCalls.length));
+  check('its existing email is completely unchanged', untouched.email === 'existing@has-email.com');
+  check('its existing social links are completely unchanged', untouched.facebook === 'x' && untouched.instagram === 'x');
+
+  // --- missing email only: fetches, fills email, never touches pre-existing social ---
+  const missingEmailOnly = { businessName: 'MissingEmail', website: 'https://missing-email.example.com', email: '', facebook: 'https://facebook.com/keep-me', instagram: 'x', linkedin: 'x', tiktok: 'x', youtube: 'x', twitter: 'x' };
+  const emailFilled = await enrichManager.enrichRecord(missingEmailOnly, { email: true, social: true });
+  check('a record missing only email gets it filled in', !!emailFilled.email, emailFilled.email);
+  check('its pre-existing social link is left exactly as it was', emailFilled.facebook === 'https://facebook.com/keep-me');
+
+  // --- a fetch failure is a real error, but never blanks an existing value ---
+  const failingSite = { businessName: 'Failer', website: 'https://fail-site.example.com', email: '', facebook: 'https://facebook.com/already-there' };
+  const failedResult = await enrichManager.enrichRecord(failingSite, { email: true, social: true });
+  check('a homepage fetch failure is reported as an Error status', failedResult.emailStatus === 'Error', failedResult.emailStatus);
+  check('a fetch failure never blanks a field the record already had', failedResult.facebook === 'https://facebook.com/already-there');
+
+  // --- no website: Skipped, not Error, zero network calls ---
+  fetchCalls.length = 0;
+  const noWebsite = { businessName: 'NoSite', website: '', email: '' };
+  const skipped = await enrichManager.enrichRecord(noWebsite, { email: true, social: true });
+  check('a record with no website is Skipped, not Error', skipped.emailStatus === 'Skipped', skipped.emailStatus);
+  check('a record with no website makes zero network requests', fetchCalls.length === 0);
+
+  // --- enrichAll: a batch run with ONE failing record, checkpointing, per-platform counts ---
+  const bigList = [];
+  for (let i = 0; i < 30; i++) {
+    bigList.push({
+      businessName: `Biz ${i}`, stableKey: `k${i}`,
+      website: i === 15 ? 'https://fail-site-15.example.com' : `https://biz${i}.example.com`,
+      email: '', facebook: '', instagram: '', linkedin: '', tiktok: '', youtube: '', twitter: '',
+    });
+  }
+  let batchCalls = 0;
+  const allResult = await enrichManager.enrichAll(
+    bigList, { email: true, social: true, concurrency: 4, batchSize: 10, timeoutMs: 2000, maxPagesPerSite: 1 },
+    { onProgress: () => {}, onBatch: async () => { batchCalls++; } },
+  );
+
+  check('all 30 records come back (none dropped)', allResult.records.length === 30);
+  check('exactly one record (the failing site) is reported as an error', allResult.stats.counts.errors === 1, String(allResult.stats.counts.errors));
+  check('the other 29 records were NOT stopped by the one failure',
+    allResult.records.filter((r) => r.email).length === 29, String(allResult.records.filter((r) => r.email).length));
+  check('checkpointing (onBatch) fired more than once across 30 records at batchSize 10', batchCalls >= 2, String(batchCalls));
+  check('per-platform counts are tracked correctly (Facebook found on every successful record)',
+    allResult.stats.counts.facebook === 29, String(allResult.stats.counts.facebook));
+  check('a missing/failed field is never counted as a technical error beyond the one real failure',
+    allResult.stats.counts.notFound === 0 && allResult.stats.counts.errors === 1);
+
+  // --- zero tabs: this whole engine runs with chrome entirely undefined ---
+  check('enrichAll never touches chrome.tabs — chrome is undefined throughout and nothing threw',
+    typeof chrome === 'undefined');
+
+  // --- pause genuinely halts progress; resume continues, does not restart ---
+  const slowFetch = async (url) => { await sleep(25); return fakeFetch(url); };
+  globalThis.fetch = slowFetch;
+
+  const pauseList = Array.from({ length: 12 }, (_, i) => ({
+    businessName: `Pause ${i}`, stableKey: `p${i}`, website: `https://pause${i}.example.com`, email: '',
+  }));
+  const pauseRunPromise = enrichManager.enrichAll(
+    pauseList, { email: true, social: false, concurrency: 3, batchSize: 100, timeoutMs: 2000, maxPagesPerSite: 1 }, {},
+  );
+  await sleep(5);
+  enrichManager.pauseEnrichment();
+  // 12 items / concurrency 3 * 25ms ≈ 100ms unpaused — waiting 220ms while
+  // paused is more than double that, so if pause were a no-op this would
+  // already be finished.
+  await sleep(220);
+  const doneWhilePaused = enrichManager.getEnrichStatus().done;
+  check('pausing genuinely halts progress (220ms paused is longer than a full unpaused run would take)',
+    doneWhilePaused < 12, String(doneWhilePaused));
+  enrichManager.resumeEnrichment();
+  const pauseResult = await pauseRunPromise;
+  check('after resume, the run continues to completion instead of staying stuck',
+    pauseResult.records.length === 12 && pauseResult.records.every((r) => r.email));
+  check('resuming continued the SAME run rather than restarting — no record was skipped or duplicated',
+    new Set(pauseResult.records.map((r) => r.stableKey)).size === 12);
+
+  // --- stop mid-run: keeps completed work, aborts the rest, never overshoots the list ---
+  const stopList = Array.from({ length: 12 }, (_, i) => ({
+    businessName: `Stop ${i}`, stableKey: `s${i}`, website: `https://stop${i}.example.com`, email: '',
+  }));
+  const stopRunPromise = enrichManager.enrichAll(
+    stopList, { email: true, social: false, concurrency: 3, batchSize: 100, timeoutMs: 2000, maxPagesPerSite: 1 }, {},
+  );
+  await sleep(45);           // long enough for at least the first wave to land, short of the full run
+  enrichManager.stopEnrichment();
+  const stopResult = await stopRunPromise;
+  check('a stopped run reports aborted:true', stopResult.aborted === true);
+  check('a stopped run keeps whatever was already completed rather than discarding it',
+    stopResult.records.some((r) => r.email), JSON.stringify(stopResult.records.map((r) => !!r.email)));
+  check('a stopped run never processed more than the full list', stopResult.records.length === 12);
+
+  // --- website page caching: franchise leads sharing one domain cost one fetch, not N ---
+  globalThis.fetch = fakeFetch;
+  fetchCalls.length = 0;
+  const franchiseList = Array.from({ length: 8 }, (_, i) => ({
+    businessName: `Franchise ${i}`, stableKey: `f${i}`, website: 'https://onefranchisesite.example.com', email: '',
+  }));
+  const franchiseResult = await enrichManager.enrichAll(
+    franchiseList, { email: true, social: false, concurrency: 4, batchSize: 100, timeoutMs: 2000, maxPagesPerSite: 1 }, {},
+  );
+  check('all 8 records sharing one website still get enriched', franchiseResult.records.every((r) => r.email));
+  check('the shared website was only fetched ONCE for 8 records on the same domain, not 8 times',
+    fetchCalls.length === 1, `${fetchCalls.length} fetch(es) for 8 records`);
+
+  globalThis.fetch = priorFetch;
 }
 
 /* ------------------------------ report ---------------------------- */

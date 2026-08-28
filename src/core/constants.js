@@ -4,7 +4,7 @@
  */
 
 export const APP_NAME = 'Al-Aqsa Scraper';
-export const APP_VERSION = '4.4.0';
+export const APP_VERSION = '4.5.0';
 
 /* ------------------------------------------------------------------ *
  * Storage keys. Records are sharded per job so a big job never has to
@@ -44,6 +44,8 @@ export const MSG = {
   // side panel -> background
   ENRICH_START: 'enrich:start',
   ENRICH_STOP: 'enrich:stop',
+  ENRICH_PAUSE: 'enrich:pause',
+  ENRICH_RESUME: 'enrich:resume',
   DEDUPE_RUN: 'dedupe:run',
   VALIDATE_RUN: 'validate:run',
   SCORE_RUN: 'score:run',
@@ -100,6 +102,24 @@ export const MODE = {
   FAST: 'fast',
   STANDARD: 'standard',
   ADVANCED: 'advanced',
+};
+
+/**
+ * Enrichment's own lifecycle — separate from JOB_STATUS because enrichment
+ * runs entirely after a job's collection has already finished and must
+ * never be confused with it. The UI must always be able to show one of
+ * these; "running"/"paused" are the only states that keep the busy bar up,
+ * and the four settled states are mutually exclusive terminal outcomes of
+ * one run.
+ */
+export const ENRICH_STATUS = {
+  IDLE: 'idle',
+  RUNNING: 'running',
+  PAUSED: 'paused',
+  STOPPED: 'stopped',
+  COMPLETED: 'completed',
+  PARTIAL: 'partial',
+  FAILED: 'failed',
 };
 
 /**
@@ -351,9 +371,10 @@ export const DEFAULT_SETTINGS = {
     website: true,
     email: true,
     social: true,
-    concurrency: 3,
+    concurrency: 4,
     timeoutMs: 15000,
     maxPagesPerSite: 4,
+    batchSize: 10,          // persist every N records, same as detail resolution
   },
   scoring: {
     fullAddress: 10, phone: 10, website: 10, email: 25,

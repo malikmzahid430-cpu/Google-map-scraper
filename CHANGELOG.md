@@ -1,5 +1,68 @@
 # Changelog
 
+## 4.5.0 — layered Full Address, enrichment lifecycle (pause/resume/stop, missing-only, caching)
+
+Scope: `src/collector/address.js`, `src/collector/detail-parser.js`,
+`src/collector/place-detail.js`, `src/core/constants.js`,
+`src/enrich/enrich-manager.js`, `src/jobs/job-manager.js`,
+`src/background/router.js`, `src/sidepanel/views/enrich.js`. Scraping
+architecture, queue, storage, dedupe, export, Google Sheets and every other
+UI view are unchanged.
+
+### Full Address — layered, not one JSON-index guess
+`detail-parser.js`'s embedded-JSON-payload parse now exposes `city` /
+`state` / `postalCode` / `country` independently of whether it managed to
+compose them into one "formatted address" string, plus a last-resort scan
+for a standalone locality fragment ("City, ST 12345") anywhere in the
+payload when no known index holds one. `place-detail.js:mergeEmbeddedPayload()`
+uses this to COMBINE a DOM-found street line with a payload-found locality
+whenever *neither alone* was a complete address — previously, if the DOM
+found only a street and the payload's own composition attempt failed, Full
+Address stayed blank even when the city/state/zip were sitting right there
+in the payload. `address.js:splitAddress()` also had a real parsing bug
+fixed: a locality-only string with nothing left over after the postal code
+("Jacksonville, FL 32210") was misread as street="Jacksonville",
+city="FL" — the state abbreviation was being stored as the city. Address
+(the short street field) and Full Address remain architecturally distinct
+throughout; nothing here changes how or when Address is set.
+
+### Enrichment — a real lifecycle instead of a busy/not-busy guess
+- **Pause/Resume**: new `MSG.ENRICH_PAUSE`/`ENRICH_RESUME`, mirroring the
+  existing detail-resolution pattern. `enrich-manager.js` gained
+  `pauseEnrichment()`/`resumeEnrichment()`/`waitWhilePaused()` — pausing
+  stops new records from starting while letting in-flight ones finish;
+  resuming continues the SAME run from wherever it was, never restarting.
+- **Missing-field-only, for real**: `enrichRecord()` now checks per-field
+  whether email/each social platform is already present and skips exactly
+  what's not missing — a fully-complete record now costs zero network
+  requests (previously every record was always re-fetched and
+  re-searched regardless of what it already had, and a failed re-fetch
+  could even blank out a value a previous run had already found).
+  `router.js:handleEnrich()` builds the pending list up front and merges
+  results back into the full saved record set by stable identity, so
+  untouched records are never dropped from storage.
+- **Explicit final states**: `job.enrich.status` is now one of
+  `ENRICH_STATUS` (running/paused/stopped/completed/partial/failed) — the
+  authoritative source of truth `enrich.js`'s view reads directly, never
+  inferred from progress text or from done/total. Stop now patches job
+  state immediately (previously the UI could keep showing "Enriching…"
+  until whatever request was in flight happened to finish). Detail
+  resolution had the identical latent bug (a Stop never cleared `home.js`'s
+  busy indicator either) and got the equivalent fix.
+- **Caching**: a per-run cache means several leads sharing one franchise
+  website cost one fetch cycle, not one per record — including in-flight
+  request de-duplication so concurrent workers processing the same site at
+  once don't each start a redundant fetch.
+- **Performance**: default concurrency raised from 3 to 4; checkpointing
+  (`onBatch`) persists progress incrementally, unchanged in mechanism.
+- **Recovery display**: the Enrich tab now shows "Recovering…" using the
+  same heartbeat (`job.lastActivityAt` / `STALL_THRESHOLD_MS`) collection
+  already uses, instead of ever appearing frozen with no explanation.
+- The full 251-record completion summary the UI shows now breaks results
+  down per platform (Email, Facebook, Instagram, LinkedIn, TikTok,
+  YouTube) plus Not Found / Skipped / Technical Errors, with a View Data
+  button — not just a done count.
+
 ## 4.4.0 — complete-address parsing, enrichment status stops lying
 
 Two targeted fixes. Scope: `src/collector/address.js`, `src/collector/validators.js`,

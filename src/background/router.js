@@ -9,7 +9,7 @@
  *   collect  ->  resolve details  ->  enrich  ->  dedupe  ->  validate  ->  score
  */
 import {
-  MSG, JOB_STATUS, DEFAULT_SETTINGS, SK, MODE, MODE_NEEDS_DETAIL, TECH_ERROR,
+  MSG, JOB_STATUS, DEFAULT_SETTINGS, SK, MODE, MODE_NEEDS_DETAIL, TECH_ERROR, ENRICH_STATUS,
 } from '../core/constants.js';
 import { ok, fail, sendToTab } from '../core/bus.js';
 import { createLogger } from '../core/logger.js';
@@ -376,6 +376,17 @@ async function handleScore(payload) {
   return ok(res.value.stats);
 }
 
+/**
+ * Write an enriched SUBSET of records back into the full saved set, matched
+ * by stable identity. Only records actually passed to enrichAll() (the
+ * pending list — see handleEnrich) come back from it; every other record
+ * must pass through untouched, never dropped from storage.
+ */
+function mergeEnrichedSubset(fullList, updatedSubset) {
+  const byKey = new Map(updatedSubset.map((r) => [r.stableKey || r.serial, r]));
+  return fullList.map((r) => byKey.get(r.stableKey || r.serial) || r);
+}
+
 async function handleEnrich(payload) {
   const id = (payload && payload.jobId) || (await activeJobId());
   if (!id) return fail('No job selected.');
@@ -390,55 +401,131 @@ async function handleEnrich(payload) {
   const cfg = await settings();
   const enrichSettings = { ...cfg.enrich, ...((payload && payload.settings) || {}) };
 
+  // Missing-field-only: build the pending list BEFORE starting anything.
+  // A record that already has every field this pass asked for is never
+  // re-fetched, re-derived, or even counted against the run.
+  const pending = records.filter((r) => enrich.needsEnrichment(r, enrichSettings));
+  if (!pending.length) {
+    await jobs.updateJob(id, {
+      enrich: { done: 0, total: 0, ranAt: Date.now(), status: ENRICH_STATUS.COMPLETED, currentName: '' },
+      progress: { note: 'Enrichment complete' },
+      lastActivity: 'Nothing left to enrich',
+    });
+    await notifyUi();
+    return ok({ started: false, total: 0, alreadyComplete: records.length, message: 'Every record already has what you requested — nothing to enrich.' });
+  }
+
   // Reset up front so the UI's busy check (done < total) is true the instant
   // Start is clicked, not just once the first progress tick arrives.
   await jobs.updateJob(id, {
-    enrich: { done: 0, total: records.length },
+    enrich: { done: 0, total: pending.length, status: ENRICH_STATUS.RUNNING, currentName: '' },
     lastActivity: 'Enriching records',
   });
+  await notifyUi();
 
-  const run = enrich.enrichAll(records, enrichSettings, {
+  const run = enrich.enrichAll(pending, enrichSettings, {
     onProgress: async (status) => {
       await jobs.updateJob(id, {
         counts: { enriched: status.done },
-        enrich: { done: status.done, total: status.total },
+        enrich: {
+          done: status.done, total: status.total, status: ENRICH_STATUS.RUNNING,
+          currentName: status.currentName, counts: status.counts,
+        },
         progress: { note: `Enriching ${status.done} / ${status.total}` },
         lastActivity: `Enriched ${status.done}/${status.total}`,
       });
       await notifyUi();
     },
     onBatch: async (partial) => {
-      await store.writeRecords(id, partial);
+      await store.writeRecords(id, mergeEnrichedSubset(records, partial));
       await notifyUi();
     },
   });
 
   run.then(async (result) => {
-    await store.writeRecords(id, result.records);
+    const merged = mergeEnrichedSubset(records, result.records);
+    await store.writeRecords(id, merged);
+
+    // done === total is what actually tells the UI enrichment has
+    // finished — never a note string, since a completion message like
+    // "Enrichment complete" still contains the word "Enrich" and would
+    // otherwise be indistinguishable from "still running" to a
+    // text-matching check. Collapsing total to whatever was actually
+    // processed (rather than the original queued count) means this holds
+    // whether the run finished naturally or was stopped early.
+    const finalStatus = result.aborted
+      ? ENRICH_STATUS.STOPPED
+      : result.stats.counts.errors > 0
+        ? ENRICH_STATUS.PARTIAL
+        : ENRICH_STATUS.COMPLETED;
+
     await jobs.updateJob(id, {
       counts: { enriched: result.stats.done },
-      // done === total is what actually tells the UI enrichment has
-      // finished — never a note string, since a completion message like
-      // "Enrichment complete" still contains the word "Enrich" and would
-      // otherwise be indistinguishable from "still running" to a
-      // text-matching check. Collapsing total to whatever was actually
-      // processed (rather than the original queued count) means this holds
-      // whether the run finished naturally or was stopped early — a
-      // manual Stop must also clear the busy state, not just a full run.
-      enrich: { done: result.stats.done, total: result.stats.done, ranAt: Date.now() },
+      enrich: {
+        done: result.stats.done, total: result.stats.done, ranAt: Date.now(),
+        status: finalStatus, currentName: '', counts: result.stats.counts,
+      },
       enrichRan: true,
       progress: { note: result.aborted ? 'Enrichment stopped' : 'Enrichment complete' },
       lastActivity: 'Enrichment finished',
     });
-    await jobs.refreshQuality(id, result.records);
+    await jobs.refreshQuality(id, merged);
     await notifyUi();
   }).catch(async (err) => {
     log.error('enrichment run failed', err);
     await jobs.addTechnicalError(id, TECH_ERROR.UNEXPECTED, `enrich: ${err && err.message}`);
+    await jobs.updateJob(id, {
+      enrich: { status: ENRICH_STATUS.FAILED },
+      lastActivity: 'Enrichment failed',
+    });
     await notifyUi();
   });
 
-  return ok({ started: true, total: records.length });
+  return ok({ started: true, total: pending.length, alreadyComplete: records.length - pending.length });
+}
+
+/**
+ * Stop must update the job state IMMEDIATELY, not wait for whatever request
+ * is currently in flight to finish draining — a user watching the panel
+ * clicks Stop and expects it to visibly take effect right away. The
+ * abort flag (set synchronously here) still governs the actual engine: no
+ * new record starts, in-flight ones are given a chance to finish or bail
+ * at their own next checkpoint, and results already completed are kept —
+ * `run.then()` in handleEnrich() reconciles the final counts once that
+ * settles, without changing the status this already set.
+ */
+async function handleEnrichStop() {
+  const id = await activeJobId();
+  const status = enrich.stopEnrichment();
+  if (id) {
+    await jobs.updateJob(id, {
+      enrich: { status: ENRICH_STATUS.STOPPED },
+      progress: { note: 'Enrichment stopped' },
+      lastActivity: 'Enrichment stopped',
+    });
+    await notifyUi();
+  }
+  return ok(status);
+}
+
+async function handleEnrichPause() {
+  const id = await activeJobId();
+  const status = enrich.pauseEnrichment();
+  if (id) {
+    await jobs.updateJob(id, { enrich: { status: ENRICH_STATUS.PAUSED }, lastActivity: 'Enrichment paused' });
+    await notifyUi();
+  }
+  return ok(status);
+}
+
+async function handleEnrichResume() {
+  const id = await activeJobId();
+  const status = enrich.resumeEnrichment();
+  if (id) {
+    await jobs.updateJob(id, { enrich: { status: ENRICH_STATUS.RUNNING }, lastActivity: 'Enrichment resumed' });
+    await notifyUi();
+  }
+  return ok(status);
 }
 
 /* ==================================================================== *
@@ -775,7 +862,9 @@ export const handlers = {
   [MSG.DETAIL_RESUME]: () => ok(detailResolver.resumeDetail()),
 
   [MSG.ENRICH_START]: handleEnrich,
-  [MSG.ENRICH_STOP]: () => ok(enrich.stopEnrichment()),
+  [MSG.ENRICH_STOP]: handleEnrichStop,
+  [MSG.ENRICH_PAUSE]: handleEnrichPause,
+  [MSG.ENRICH_RESUME]: handleEnrichResume,
   [MSG.DEDUPE_RUN]: handleDedupe,
   [MSG.VALIDATE_RUN]: handleValidate,
   [MSG.SCORE_RUN]: handleScore,

@@ -14,6 +14,7 @@
  */
 import * as V from './validators.js';
 import { COUNTRY_BY_CODE } from './countries.js';
+import { splitAddress } from './address.js';
 
 /* ==================================================================== *
  * 1. Locate and parse the embedded payload
@@ -248,6 +249,27 @@ function dedupeJoin(parts) {
   return out.join(', ');
 }
 
+/**
+ * A short string that looks like the LOCALITY TAIL of an address — "City,
+ * ST 12345", "Manchester M1 2AB", a bare postal code — without requiring a
+ * street. Used only as a last resort, when nothing in the payload composed
+ * into a full address string by index or by structural scan, so a
+ * DOM-found street line (see place-detail.js) still has city/region/postal
+ * to combine with instead of Full Address staying blank outright.
+ */
+function looksLikeLocalityFragment(v) {
+  if (typeof v !== 'string') return false;
+  const s = v.trim();
+  if (s.length < 4 || s.length > 80) return false;
+  if (s.includes('@') || /^https?:\/\//i.test(s)) return false;
+  if (V.isPlausiblePhone(s)) return false;
+  // "City, ST 12345" / "City, Postcode" — a comma followed by a short tail.
+  if (s.includes(',') && /,\s*[A-Za-z0-9][A-Za-z0-9.\s-]{1,24}$/.test(s)) return true;
+  // "Manchester M1 2AB" — a place name directly followed by a postcode-shaped tail.
+  if (/^[A-Za-z][A-Za-z.\s]{0,24}\s+[A-Z0-9][A-Z0-9\s-]{2,10}$/.test(s)) return true;
+  return false;
+}
+
 /** Street line = the first address component, or the head of the formatted string. */
 export function extractStreetLine(fullAddress, components) {
   if (Array.isArray(components) && typeof components[0] === 'string' && components[0].trim()) {
@@ -271,6 +293,7 @@ export function extractStreetLine(fullAddress, components) {
 export function parsePlaceDetail(html) {
   const out = {
     address: '', fullAddress: '', website: '', phone: '',
+    city: '', state: '', postalCode: '', country: '',
     latitude: '', longitude: '', placeId: '', category: '',
     rating: '', reviewCount: '',
     via: {}, ok: false,
@@ -328,6 +351,30 @@ export function parsePlaceDetail(html) {
     if (scanned) {
       out.fullAddress = country ? composeFullAddress({ formatted: scanned, components: null, country }) : scanned;
       formattedVia = 'scan';
+    }
+  }
+
+  // Component breakdown (city/state/postalCode/country), independent of
+  // whether a full address string was ever composed. place-detail.js uses
+  // this to combine a DOM-found street line with whatever locality data
+  // the payload has, instead of giving up when neither source alone is a
+  // complete address — the layered approach a single index guess can't do.
+  if (out.fullAddress) {
+    const split = splitAddress(out.fullAddress);
+    out.city = split.city; out.state = split.state; out.postalCode = split.postalCode;
+    out.country = split.country || country || '';
+  } else {
+    out.city = ''; out.state = ''; out.postalCode = ''; out.country = country || '';
+    // Nothing composed into a full string — look for a standalone locality
+    // fragment ("City, ST 12345") anywhere in the payload.
+    const frag = structuralScan(json, looksLikeLocalityFragment, { maxDepth: 8, maxNodes: 30000 });
+    if (frag) {
+      const split = splitAddress(frag);
+      if (split.city || split.postalCode || split.state) {
+        out.city = split.city; out.state = split.state; out.postalCode = split.postalCode;
+        out.country = split.country || country || '';
+        out.via.locality = 'scan';
+      }
     }
   }
 

@@ -100,11 +100,26 @@ export function splitAddress(fullAddress) {
       const name = usStyle[1].trim();
       out.postalCode = usStyle[2].trim();
       parts.pop();
-      // "Jacksonville, FL 32210" leaves a separate city part, so FL is the
-      // region. "Manchester M1 2AB" leaves only the street, which makes
-      // Manchester the city rather than a region.
-      if (parts.length > 1) out.state = name;
-      else out.city = name;
+      // "6215-1 Wilson Blvd, Jacksonville, FL 32210" leaves a separate city
+      // part, so FL is unambiguously the region.
+      // "12 High St, Manchester M1 2AB" leaves only the street, which makes
+      // Manchester the city rather than a region — UK postcodes are
+      // alphanumeric, so a name+digit tail like this is never a US state.
+      // "Jacksonville, FL 32210" ALSO leaves only one part after popping the
+      // tail, but here that lone part is genuinely the street, not the
+      // city — the shape is city+state+zip with the street simply absent,
+      // and `name` really is a US state abbreviation. Without this check,
+      // "FL" was being stored as the city and "Jacksonville" as the street.
+      const isUsZip = /^\d{5}(-\d{4})?$/.test(out.postalCode.replace(/\s+/g, ''));
+      const looksLikeStateAbbrev = /^[A-Za-z]{2}$/.test(name);
+      if (parts.length > 1) {
+        out.state = name;
+      } else if (isUsZip && looksLikeStateAbbrev && parts.length === 1) {
+        out.state = name;
+        out.city = parts.pop();
+      } else {
+        out.city = name;
+      }
     } else if (postalOnly && /\d/.test(postalOnly[1])) {
       out.postalCode = postalOnly[1].trim();
       parts.pop();

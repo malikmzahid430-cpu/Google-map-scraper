@@ -5,7 +5,7 @@
  * Nothing else may mutate a job's status, which keeps the state machine sound
  * across service-worker eviction and extension reload.
  */
-import { SK, JOB_STATUS, MODE, APP_VERSION } from '../core/constants.js';
+import { SK, JOB_STATUS, MODE, APP_VERSION, ENRICH_STATUS } from '../core/constants.js';
 import * as store from '../core/storage.js';
 import { createLogger } from '../core/logger.js';
 import { blankTechnical, recordTechnicalError, analyze } from '../core/quality.js';
@@ -82,8 +82,19 @@ export function blankJob(overrides = {}) {
      * means — the UI must never infer that from a human-readable progress
      * note, because a completion message ("Enrichment complete") contains
      * the same word a "still running" message does.
+     *
+     * `status` is the authoritative lifecycle state and is always one of
+     * ENRICH_STATUS — the UI never has to guess "running" vs "just
+     * finished" vs "stopped" from done/total alone.
      */
-    enrich: { done: 0, total: 0, ranAt: null },
+    enrich: {
+      done: 0, total: 0, ranAt: null, status: ENRICH_STATUS.IDLE, currentName: '',
+      counts: {
+        emails: 0, socials: 0, websites: 0,
+        facebook: 0, instagram: 0, tiktok: 0, linkedin: 0, youtube: 0, twitter: 0,
+        notFound: 0, errors: 0, skipped: 0,
+      },
+    },
 
     /** Heartbeat — the watchdog reads this to decide "Possibly Stuck". */
     lastActivityAt: Date.now(),

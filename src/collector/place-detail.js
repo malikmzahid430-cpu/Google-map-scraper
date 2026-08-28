@@ -291,6 +291,24 @@ export function mergeEmbeddedPayload(detail, html) {
     out.postalCode = out.postalCode || c.postalCode;
     out.country = out.country || c.country;
     out.via.fullAddress = `payload:${payload.via.fullAddress}`;
+  } else if (!out.fullAddress && out.address && (payload.city || payload.postalCode)) {
+    // Neither source alone produced a complete address — the DOM found a
+    // street (out.address) but no locality, and the payload independently
+    // resolved city/state/postal/country but never composed them into one
+    // string (a wrong index, or the payload simply never joins them
+    // itself). Combine what each one DID find rather than leaving Full
+    // Address blank when the pieces are actually sitting right there.
+    const built = composeFull(out.address, {
+      city: payload.city, state: payload.state, postalCode: payload.postalCode, country: payload.country,
+    });
+    if (built) {
+      out.fullAddress = built;
+      out.city = out.city || payload.city;
+      out.state = out.state || payload.state;
+      out.postalCode = out.postalCode || payload.postalCode;
+      out.country = out.country || payload.country;
+      out.via.fullAddress = 'payload:composed-from-dom-street';
+    }
   }
   if (!out.website && V.isPlausibleWebsite(payload.website)) {
     out.website = payload.website;
