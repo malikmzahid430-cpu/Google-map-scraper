@@ -122,7 +122,7 @@
     "https://*/*"
   ],
   "oauth2": {
-    "client_id": "PASTE_YOUR_OAUTH_CLIENT_ID_HERE.apps.googleusercontent.com",
+    "client_id": "113148532135-0is6hdlvi3o72orhvfdkb6uiq2v3kr54.apps.googleusercontent.com",
     "scopes": [
       "https://www.googleapis.com/auth/spreadsheets",
       "https://www.googleapis.com/auth/drive.file"
