@@ -213,6 +213,7 @@ let placeSeq = 0;
  */
 export function makeCard({
   name, category, rating, reviews, street, open = true, website = '', phone = '', phoneText = '',
+  layout = 'combined',
 } = {}) {
   placeSeq += 1;
   const slug = String(name).replace(/[^A-Za-z0-9]+/g, '+');
@@ -229,7 +230,14 @@ export function makeCard({
   const body = new El('div', { class: 'fontBodyMedium' });
   body.append(new El('div').append(name));
   body.append(new El('div').append(`${rating} (${reviews})`));
-  body.append(new El('div').append(`${category} · ${street}`));
+  if (layout === 'separate') {
+    // Some Maps rollouts render category and street as two independent
+    // rows instead of one "category · street" middot-joined line.
+    body.append(new El('div').append(category));
+    body.append(new El('div').append(street));
+  } else {
+    body.append(new El('div').append(`${category} · ${street}`));
+  }
   if (open) body.append(new El('div').append('Open ⋅ Closes 5 PM'));
   // Some Maps rollouts print the phone number as plain visible text (often
   // sharing a row with hours/status) instead of a dedicated button/anchor —

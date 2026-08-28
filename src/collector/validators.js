@@ -78,7 +78,10 @@ export function isPlausibleAddressLine(v) {
  */
 export function isPlausibleFullAddress(v) {
   if (!isPlausibleAddressLine(v)) return false;
-  const s = v.trim();
+  // A line break separates components the same way a comma does — Maps
+  // often renders the address as stacked rows rather than one comma-joined
+  // string, and reading that back gives a newline where a comma would be.
+  const s = v.trim().replace(/\s*\n+\s*/g, ', ');
   const parts = s.split(',').map((p) => p.trim()).filter(Boolean);
   if (parts.length < 2) return false;
   if (s.length < 12) return false;

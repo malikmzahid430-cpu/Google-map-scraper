@@ -284,7 +284,11 @@ async function startDetailResolution(jobId) {
     }
     await jobs.updateJob(id, {
       detail: {
-        done: result.stats.done, total: result.stats.total, resolved: result.stats.resolved,
+        // Collapsing total to whatever was actually attempted (rather than
+        // the original queued count) means `done < total` — the busy check
+        // home.js and enrich.js both use — correctly clears whether this
+        // run finished naturally or was stopped early.
+        done: result.stats.done, total: result.stats.done, resolved: result.stats.resolved,
         notFound: result.stats.notFound, failed: result.stats.failed, ranAt: Date.now(),
       },
       progress: { note: result.aborted ? 'Detail resolution stopped' : 'Details resolved' },
@@ -386,10 +390,18 @@ async function handleEnrich(payload) {
   const cfg = await settings();
   const enrichSettings = { ...cfg.enrich, ...((payload && payload.settings) || {}) };
 
+  // Reset up front so the UI's busy check (done < total) is true the instant
+  // Start is clicked, not just once the first progress tick arrives.
+  await jobs.updateJob(id, {
+    enrich: { done: 0, total: records.length },
+    lastActivity: 'Enriching records',
+  });
+
   const run = enrich.enrichAll(records, enrichSettings, {
     onProgress: async (status) => {
       await jobs.updateJob(id, {
         counts: { enriched: status.done },
+        enrich: { done: status.done, total: status.total },
         progress: { note: `Enriching ${status.done} / ${status.total}` },
         lastActivity: `Enriched ${status.done}/${status.total}`,
       });
@@ -405,6 +417,15 @@ async function handleEnrich(payload) {
     await store.writeRecords(id, result.records);
     await jobs.updateJob(id, {
       counts: { enriched: result.stats.done },
+      // done === total is what actually tells the UI enrichment has
+      // finished — never a note string, since a completion message like
+      // "Enrichment complete" still contains the word "Enrich" and would
+      // otherwise be indistinguishable from "still running" to a
+      // text-matching check. Collapsing total to whatever was actually
+      // processed (rather than the original queued count) means this holds
+      // whether the run finished naturally or was stopped early — a
+      // manual Stop must also clear the busy state, not just a full run.
+      enrich: { done: result.stats.done, total: result.stats.done, ranAt: Date.now() },
       enrichRan: true,
       progress: { note: result.aborted ? 'Enrichment stopped' : 'Enrichment complete' },
       lastActivity: 'Enrichment finished',

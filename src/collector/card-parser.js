@@ -144,10 +144,35 @@ export function parseCategoryAndAddressLine(bodyText) {
   }
 
   if (!out.category) {
+    // idx !== 0 excludes the business name directly, rather than checking
+    // `cand !== lines[0]` after the fact — `find()` returns only the FIRST
+    // match, and the name (line 0) satisfies this same filter almost every
+    // time (real business names rarely start with a digit), so checking
+    // afterwards meant this fallback matched the name, rejected it, and
+    // then gave up — never reaching whatever line actually was the category.
     const cand = lines.find(
-      (l) => !/[\d]/.test(l.slice(0, 3)) && l.length < 45 && !/^(open|closed|·)/i.test(l),
+      (l, idx) => idx !== 0 && !/[\d]/.test(l.slice(0, 3)) && l.length < 45 && !/^(open|closed|·)/i.test(l),
     );
-    if (cand && cand !== lines[0]) out.category = cand;
+    if (cand) out.category = cand;
+  }
+
+  // Fallback: not every card layout puts category and street on one
+  // middot-joined line — some render them as separate rows with no
+  // separator at all. When that leaves addressLine blank, look for a
+  // standalone line that reads like a street address instead: excludes the
+  // business name (always line 0), the rating/review line, and anything
+  // already claimed as hours/status or category.
+  if (!out.addressLine) {
+    const isRatingLine = (l) => /^\d{1,2}[.,]\d\b/.test(l) || /\(\s*[\d.,]+\s*\)/.test(l);
+    const cand = lines.find((l, idx) => {
+      if (idx === 0) return false;
+      if (isRatingLine(l)) return false;
+      if (/^(open|closed|opens|closes|temporarily|permanently)/i.test(l)) return false;
+      if (out.category && l === out.category) return false;
+      if (V.isPlausiblePhone(l)) return false;
+      return V.isPlausibleAddressLine(l);
+    });
+    if (cand) out.addressLine = stripTrailingPhone(cand);
   }
 
   // Defensive: a phone number must never end up in Category or Address —

@@ -5,7 +5,7 @@
  * collection, and neither counts a missing value as an error.
  */
 import { MSG, SOCIAL_KEYS } from '../../core/constants.js';
-import { esc, banner, onClick, empty, coverageRow, stat } from '../ui.js';
+import { banner, onClick, empty, coverageRow, stat } from '../ui.js';
 
 export function renderEnrich(state) {
   const records = state.records || [];
@@ -16,6 +16,8 @@ export function renderEnrich(state) {
   const q = state.quality();
   const detail = (state.job && state.job.detail) || { done: 0, total: 0 };
   const detailBusy = detail.total > 0 && detail.done < detail.total;
+  const enrichState = (state.job && state.job.enrich) || { done: 0, total: 0, ranAt: null };
+  const enrichBusy = enrichState.total > 0 && enrichState.done < enrichState.total;
   const withSite = records.filter((r) => r.website).length;
   const e = state.settings.enrich || {};
   const needDetail = records.filter((r) => !r.fullAddress || !r.website || !r.phone).length;
@@ -63,13 +65,14 @@ export function renderEnrich(state) {
         <input type="number" min="3000" max="60000" step="1000" data-enrich-num="timeoutMs" value="${Number(e.timeoutMs) || 15000}"></label>
     </div>
     <div class="divider"></div>
-    ${state.job && /Enrich/i.test((state.job.progress && state.job.progress.note) || '')
+    ${enrichBusy
     ? `<div class="bar indeterminate"><i></i></div>
-       <p class="hint">${esc(state.job.progress.note)}</p>
+       <p class="hint">Enriching ${enrichState.done} / ${enrichState.total}</p>
        <button class="danger block" data-act="enrich-stop">STOP ENRICHMENT</button>`
     : `<button class="primary cta block" data-act="enrich-start" ${state.busy || !withSite ? 'disabled' : ''}>
          ${withSite ? `START ENRICHMENT — ${withSite} record(s)` : 'No websites to inspect'}
        </button>`}
+    ${enrichState.ranAt && !enrichBusy ? `<p class="hint tiny" style="margin-top:8px"><strong>&#10003; Enrichment complete</strong> — ${enrichState.total} record(s) processed.</p>` : ''}
     <p class="hint tiny" style="margin-top:8px">Homepage, then contact and about pages. Only addresses the business publishes itself are collected — nothing is guessed. Records with no website are marked <code>Skipped</code>, which is not an error.</p>
   </div>
 

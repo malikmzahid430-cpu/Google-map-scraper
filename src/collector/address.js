@@ -68,7 +68,13 @@ export function canonicalCountry(part) {
  */
 export function splitAddress(fullAddress) {
   const out = { street: '', city: '', state: '', postalCode: '', country: '' };
-  const raw = String(fullAddress || '').trim();
+  // Google frequently renders the address as multiple stacked lines (street
+  // on one row, city/state/zip on the next) rather than one comma-joined
+  // string — reading that back via innerText/textContent yields a newline
+  // where a comma would otherwise be, which silently broke the split below
+  // (a genuinely complete address read as street-only, or its city ending
+  // up misparsed as a region). Treat a line break exactly like a comma.
+  const raw = String(fullAddress || '').replace(/\s*\n+\s*/g, ', ').trim();
   if (!raw) return out;
 
   const parts = raw.split(',').map((p) => p.trim()).filter(Boolean);
@@ -130,6 +136,11 @@ export function isCompleteAddress(fullAddress) {
 /** Tidy separators without rewriting any component. */
 export function tidyAddress(value) {
   return String(value || '')
+    // A line break separates components exactly like a comma does — convert
+    // it FIRST, before the general whitespace collapse below turns it into
+    // an indistinguishable plain space and glues two components together
+    // (e.g. a street line and city rendered as two stacked DOM rows).
+    .replace(/\s*\n+\s*/g, ', ')
     .replace(/[  ]/g, ' ')
     .replace(/\s+/g, ' ')
     .replace(/\s*,\s*/g, ', ')

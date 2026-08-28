@@ -1,5 +1,64 @@
 # Changelog
 
+## 4.4.0 — complete-address parsing, enrichment status stops lying
+
+Two targeted fixes. Scope: `src/collector/address.js`, `src/collector/validators.js`,
+`src/collector/card-parser.js`, `src/jobs/job-manager.js`, `src/background/router.js`,
+`src/sidepanel/views/enrich.js`. Nothing else changed.
+
+### Fixed — Full Address parsed incorrectly or left blank
+`address.js:splitAddress()` and `validators.js:isPlausibleFullAddress()` both
+split a raw address string on commas only. Google frequently renders the
+address as two stacked DOM rows (street on one line, city/state/zip on the
+next) rather than one comma-joined string — reading that back via
+`innerText` produces a line break where a comma would be. That broke the
+comma-based split: a genuinely complete address either failed the
+"complete" check entirely (kept as a bare street line, Full Address left
+blank) or — worse — parsed with the city misread as the region. Both
+functions now treat a line break exactly like a comma before splitting;
+`address.js:tidyAddress()` does the same conversion *before* its general
+whitespace collapse, since that collapse previously turned the line break
+into a plain space and glued the two rows together with no separator left
+to recover.
+
+Separately, `card-parser.js:parseCategoryAndAddressLine()` only ever found
+the short **Address** field (the street line collected during the main
+fast pass) on a card whose category and street were rendered on one
+"category · street" line. Some card layouts show them as two independent
+rows with no middot at all — the previous code had no fallback for this
+and left both Category and (short) Address blank. It also had unused,
+purely defensive fallback code for Category alone: that fallback compared
+its match against `lines[0]` (the business name) *after* `find()` had
+already returned it, so it always matched the name first, rejected it, and
+gave up — it could never reach the real category line beneath it. Both
+gaps are fixed: the category fallback now excludes the name line from
+consideration up front, and a new fallback independently looks for a line
+that reads like a street address (has a digit or a street-suffix word)
+when no middot-combined line produced one.
+
+### Fixed — Enrich tab stuck showing "Enriching..." after enrichment finished
+The panel decided whether enrichment was still running by regex-matching
+`/Enrich/i` against the job's human-readable progress note. The
+*completion* message router.js sets is literally `"Enrichment complete"` —
+which also matches `/Enrich/i`. The panel could never tell "still running"
+apart from "just finished": the progress bar and STOP button stayed up
+forever once a run finished, with no indication anything had completed.
+- `job-manager.js` gained a structured `job.enrich = { done, total, ranAt }`
+  (mirroring the existing `job.detail` used for detail-resolution's busy
+  state), merged the same way in `updateJob()`.
+- `router.js:handleEnrich()` now writes real progress into it, and —
+  importantly — collapses `total` to whatever was actually processed on
+  completion, whether the run finished naturally or was stopped early via
+  the STOP button. Without that collapse, a manual Stop before the full
+  queue finished would leave `done < total` permanently, reproducing the
+  same stuck state. `detail-resolution`'s completion patch had the
+  identical latent bug (a manual Stop there never cleared `home.js`'s
+  "Resolving full address X / Y" busy indicator either) and got the same
+  fix.
+- `enrich.js`'s view now reads `job.enrich.done < job.enrich.total`
+  directly instead of matching text, and shows an explicit "✓ Enrichment
+  complete — N record(s) processed" line once it's actually done.
+
 ## 4.3.0 — reliable phone extraction, simplified field selection, filter-before-export
 
 A targeted correction on top of the card-first collection engine (unchanged

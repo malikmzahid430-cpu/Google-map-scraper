@@ -77,6 +77,14 @@ export function blankJob(overrides = {}) {
     /** Detail resolution progress. */
     detail: { done: 0, total: 0, resolved: 0, notFound: 0, failed: 0, ranAt: null },
 
+    /**
+     * Enrichment progress. `done < total` is what "still enriching" actually
+     * means — the UI must never infer that from a human-readable progress
+     * note, because a completion message ("Enrichment complete") contains
+     * the same word a "still running" message does.
+     */
+    enrich: { done: 0, total: 0, ranAt: null },
+
     /** Heartbeat — the watchdog reads this to decide "Possibly Stuck". */
     lastActivityAt: Date.now(),
     lastActivity: 'Created',
@@ -157,11 +165,12 @@ export async function updateJob(jobId, patch) {
     counts: { ...job.counts, ...(patch.counts || {}) },
     progress: { ...job.progress, ...(patch.progress || {}) },
     detail: { ...job.detail, ...(patch.detail || {}) },
+    enrich: { ...job.enrich, ...(patch.enrich || {}) },
   };
 
   // Any patch that reports real movement refreshes the heartbeat.
   if (patch.lastActivityAt) next.lastActivityAt = patch.lastActivityAt;
-  else if (patch.counts || patch.status || patch.detail) next.lastActivityAt = Date.now();
+  else if (patch.counts || patch.status || patch.detail || patch.enrich) next.lastActivityAt = Date.now();
   if (patch.lastActivity) next.lastActivity = patch.lastActivity;
 
   if (patch.status === JOB_STATUS.RUNNING && !next.startedAt) next.startedAt = Date.now();

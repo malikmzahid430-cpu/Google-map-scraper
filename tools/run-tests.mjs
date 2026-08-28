@@ -1162,6 +1162,138 @@ group('Address parsing — international shapes');
     address.splitAddress('1 Main St, Springfield, Gibberishland').country === '');
 }
 
+/* ================================================================== */
+group('Address parsing — stacked-line (newline) addresses');
+
+{
+  // Google frequently renders the address as two DOM rows (street, then
+  // city/state/zip) rather than one comma-joined string. Reading that back
+  // via innerText gives a newline where a comma would be — which used to
+  // make a genuinely complete address parse as street-only, or worse,
+  // misread the city as a state.
+  const stacked = '6215-1 Wilson Blvd Building 1\nJacksonville, FL 32210';
+
+  const split = address.splitAddress(stacked);
+  check('a newline between street and city/state/zip is treated as a separator',
+    split.street === '6215-1 Wilson Blvd Building 1' && split.city === 'Jacksonville'
+    && split.state === 'FL' && split.postalCode === '32210',
+    JSON.stringify(split));
+
+  check('a stacked-line address is recognised as complete', address.isCompleteAddress(stacked));
+  check('a stacked-line address passes the plausibility check', validators.isPlausibleFullAddress(stacked));
+
+  const tidied = address.tidyAddress(stacked);
+  check('tidyAddress converts the line break into a proper comma, not a bare space',
+    tidied === '6215-1 Wilson Blvd Building 1, Jacksonville, FL 32210', tidied);
+
+  // The exact place-detail.js pipeline order: isCompleteAddress on the raw
+  // value, THEN tidy, THEN split again — must agree at every step.
+  if (address.isCompleteAddress(stacked)) {
+    const full = address.tidyAddress(stacked);
+    const comps = address.splitAddress(full);
+    check('the full pipeline (isComplete -> tidy -> split) yields the same correct components',
+      comps.city === 'Jacksonville' && comps.state === 'FL' && comps.postalCode === '32210',
+      JSON.stringify(comps));
+  } else {
+    check('the full pipeline (isComplete -> tidy -> split) yields the same correct components', false, 'isCompleteAddress rejected a valid stacked address');
+  }
+
+  // A street-only single line (no second row at all) must still stay
+  // correctly street-only — this fix must not manufacture components.
+  check('a genuinely street-only address (no second line) still yields no city',
+    !address.isCompleteAddress('6215-1 Wilson Blvd Building 1'));
+}
+
+/* ================================================================== */
+group('Address — card layouts without a middot-combined line');
+
+{
+  const { makeCard } = await import('./harness/mini-dom.mjs');
+
+  // Some Maps card layouts render category and street as two independent
+  // rows instead of one "category · street" line — the address-line
+  // extractor previously had no fallback for this at all, so both category
+  // and address came back blank.
+  const separateCard = makeCard({
+    name: 'Sunrise Plumbing', category: 'Plumber', rating: '4.8', reviews: '212',
+    street: '900 Bay St', layout: 'separate',
+  });
+  const rec = cardParser.parseCard(separateCard, 1);
+  check('address is still found when category/street are on separate lines (no middot)',
+    rec.address === '900 Bay St', rec.address);
+  check('category is still found when category/street are on separate lines (no middot)',
+    rec.category === 'Plumber', rec.category);
+
+  // The combined (middot) layout must be completely unaffected.
+  const combinedCard = makeCard({
+    name: 'Sunrise Plumbing 2', category: 'Plumber', rating: '4.8', reviews: '212',
+    street: '901 Bay St', layout: 'combined',
+  });
+  const rec2 = cardParser.parseCard(combinedCard, 2);
+  check('the combined (middot) layout is unaffected', rec2.address === '901 Bay St' && rec2.category === 'Plumber');
+}
+
+/* ================================================================== */
+group('Enrichment — busy state reflects reality, not a note string');
+
+{
+  // job-manager.js: the structured enrich{done,total,ranAt} state.
+  const blank = jobsApi.blankJob({ id: 'e1' });
+  check('a fresh job starts with enrich.total === 0 (not busy)', blank.enrich.total === 0 && blank.enrich.done === 0);
+
+  const started = { ...blank, enrich: { done: 0, total: 51, ranAt: null } };
+  check('enrichment in progress: done < total', started.enrich.done < started.enrich.total);
+
+  // The bug: router.js used to leave `enrich.total` at the original queued
+  // count even after the run stopped early, so done < total stayed true
+  // forever. The fix collapses total to whatever was actually processed.
+  const stoppedEarly = { ...blank, enrich: { done: 20, total: 20, ranAt: Date.now() } }; // 20 queued, stopped after 20
+  check('a run stopped early is NOT stuck busy once total is collapsed to done',
+    !(stoppedEarly.enrich.total > 0 && stoppedEarly.enrich.done < stoppedEarly.enrich.total));
+
+  const completed = { ...blank, enrich: { done: 51, total: 51, ranAt: Date.now() } };
+  check('a naturally completed run is not busy', !(completed.enrich.total > 0 && completed.enrich.done < completed.enrich.total));
+
+  // The exact bug reported: a completion note still containing the word
+  // "Enrich" must NOT be mistaken for "still running".
+  const completedNote = 'Enrichment complete';
+  check('sanity: the completion note text does contain the word that broke the old check',
+    /Enrich/i.test(completedNote));
+
+  // enrich.js's rendered view must show the Start button (not the busy bar)
+  // once enrichment has actually finished, and must show the finished
+  // summary rather than nothing at all.
+  const { renderEnrich } = await import('../src/sidepanel/views/enrich.js');
+  const constants = await import('../src/core/constants.js');
+  const records = [
+    { businessName: 'A', website: 'https://a.example.com', phone: '+1 555 0001', address: '1 Main St', rating: '4.5', reviewCount: '10' },
+  ];
+  const mkEnrichState = (job) => {
+    const st = {
+      settings: constants.DEFAULT_SETTINGS, job, records, busy: false,
+      quality: () => quality.analyze(records),
+    };
+    return st;
+  };
+
+  const doneJob = jobsApi.blankJob({ id: 'e2', enrich: { done: 1, total: 1, ranAt: Date.now() }, progress: { note: 'Enrichment complete' } });
+  const doneHtml = renderEnrich(mkEnrichState(doneJob));
+  check('after completion, the view shows the Start button again, not the busy bar',
+    doneHtml.includes('data-act="enrich-start"') && !doneHtml.includes('data-act="enrich-stop"'));
+  check('after completion, the view explicitly says enrichment is complete',
+    /Enrichment complete/i.test(doneHtml));
+
+  const busyJob = jobsApi.blankJob({ id: 'e3', enrich: { done: 5, total: 20, ranAt: null } });
+  const busyHtml = renderEnrich(mkEnrichState(busyJob));
+  check('while actually running, the view shows the busy bar and Stop button',
+    busyHtml.includes('data-act="enrich-stop"') && !busyHtml.includes('data-act="enrich-start"'));
+
+  const stoppedJob = jobsApi.blankJob({ id: 'e4', enrich: { done: 3, total: 3, ranAt: Date.now() }, progress: { note: 'Enrichment stopped' } });
+  const stoppedHtml = renderEnrich(mkEnrichState(stoppedJob));
+  check('after a manual Stop, the view also returns to the Start button (not stuck busy)',
+    stoppedHtml.includes('data-act="enrich-start"') && !stoppedHtml.includes('data-act="enrich-stop"'));
+}
+
 /* ------------------------------ report ---------------------------- */
 console.log('\n  ' + '='.repeat(58));
 console.log('  ' + passed + ' passed, ' + failed + ' failed');
