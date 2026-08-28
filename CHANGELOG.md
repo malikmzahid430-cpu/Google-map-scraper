@@ -1,5 +1,80 @@
 # Changelog
 
+## 4.5.3 — fix Full Address staying blank across an entire job
+
+Scope: `src/collector/detail-parser.js`, `src/collector/place-detail.js`,
+`tools/run-tests.mjs`.
+
+### Fixed — three separate bugs that each independently made this worse
+Confirmed with a live example: "California Building Professionals" shows a
+complete address on Google's own detail panel (street, city, state, zip,
+country, all in plain text), the extension's short Address field now
+correctly shows the street (the 4.5.1 fix), but Full Address stayed blank —
+for every record in the job, every time, even after "Resolve" reported
+complete. Re-reading `detail-parser.js` and `place-detail.js` end to end
+turned up three compounding structural bugs, not one:
+
+1. **`parsePlaceDetail()` bailed out completely, before any fallback ran.**
+   If `extractPlaceJson()` couldn't find/parse Google's
+   `APP_INITIALIZATION_STATE` array blob in the raw (non-JS-executed) fetch
+   response, the function returned an entirely empty object immediately —
+   before the locality-fragment scan, before anything. Every fallback built
+   in 4.5.0/4.5.1 only ever ran *after* this point, so none of them mattered
+   when the array payload itself wasn't found. Fixed by gating only the
+   array-index-dependent extraction (website/phone/geo/category/rating/
+   placeId) behind `if (json)`, while address resolution now also tries a
+   brand new independent source: JSON-LD (`extractJsonLdAddress()`, schema.org
+   `PostalAddress` in a `<script type="application/ld+json">` block), which
+   doesn't depend on locating that array blob at all.
+
+2. **A bare street line was silently smuggled through as a fake "Full
+   Address."** `composeFullAddress()` would fall back to using a single,
+   comma-less street segment as the entire Full Address when nothing better
+   was found. That made `out.fullAddress` *non-blank* — which then
+   permanently blocked the structural scan and the locality-fragment scan
+   right below it, since both only run `if (!out.fullAddress)`. A record
+   whose `formattedAddress` index happened to hold just the street (very
+   plausible — that's a wrong-index guess, not a payload absence) got stuck
+   on that lone street forever: never blank enough to try anything better,
+   never complete enough to actually be a full address. Fixed: a bare
+   street is now rejected (returns `''`) unless a country was available to
+   pair with it, matching the documented invariant in `address.js`
+   ("Full Address stays blank... a partial address is never presented as
+   complete") that this function was quietly violating.
+
+3. **The DOM+payload combine step required a DOM-found street that a raw
+   `fetch()` essentially never has.** `mergeEmbeddedPayload()`'s fallback —
+   combine a found street with payload-only city/state/postal when neither
+   source alone was complete — only ever used `out.address`, the DOM-parsed
+   street. Google Maps is a JS SPA: a same-origin `fetch()` response that
+   never executed any JS frequently has none of the `data-item-id="address"`
+   markup `extractAddress()` looks for, so `out.address` was very often
+   blank on exactly this path — the one every real detail fetch goes
+   through. The combine step then had nothing to combine with, no matter
+   what the payload resolved. Fixed to also accept the payload's *own*
+   independently-resolved street (`payload.address`) as the seed when the
+   DOM gave nothing — and fixed `parsePlaceDetail()`'s own street selection
+   (`out.address`) to prefer a genuine components/formatted-value street
+   over blindly taking the first comma segment of a locality-only scanned
+   string (which is the city, not the street).
+
+Also fixed a gate that made the JSON-LD fix above dead code in production:
+`mergeEmbeddedPayload()` only called into `parsePlaceDetail()` at all when
+`extractPlaceJson()` had *already* found the array payload — meaning the new
+JSON-LD fallback, which exists specifically for when that payload is
+missing, was never reached from the real `fetchPlaceDetail()` path. It's
+called unconditionally now.
+
+None of this is guessed: 300/301 existing tests still pass unchanged (the
+one difference is 16 new tests added for these exact scenarios), isolation
+and build verification are clean, and every fix traces to a specific,
+readable line that previously produced the exact "runs to completion, Full
+Address blank for everyone" symptom reported. If Full Address is still
+blank after this on real data, the Diagnostics → **Live detail-fetch probe**
+added in 4.5.2 will now show a genuinely different picture — whether the
+array payload was found, whether JSON-LD was present, and the source each
+field actually resolved from — which is the next thing to check.
+
 ## 4.5.2 — live detail-fetch diagnostic probe
 
 Scope: `src/collector/place-detail.js`, `src/collector/index.js`,

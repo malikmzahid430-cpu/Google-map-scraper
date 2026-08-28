@@ -277,7 +277,12 @@ export function mergeEmbeddedPayload(detail, html) {
 
   let payload = null;
   try {
-    if (extractPlaceJson(html)) payload = parsePayload(html);
+    // Always try — not gated on extractPlaceJson finding the array payload
+    // first. parsePlaceDetail() handles a missing array payload internally
+    // and still tries JSON-LD, an independent address source; a pre-check
+    // here that skipped calling it entirely would make that fallback dead
+    // code in the one situation it exists for.
+    payload = parsePayload(html);
   } catch { /* a malformed response must not break this record */ }
   if (!payload || !payload.ok) return detail;
 
@@ -291,23 +296,33 @@ export function mergeEmbeddedPayload(detail, html) {
     out.postalCode = out.postalCode || c.postalCode;
     out.country = out.country || c.country;
     out.via.fullAddress = `payload:${payload.via.fullAddress}`;
-  } else if (!out.fullAddress && out.address && (payload.city || payload.postalCode)) {
-    // Neither source alone produced a complete address — the DOM found a
-    // street (out.address) but no locality, and the payload independently
-    // resolved city/state/postal/country but never composed them into one
-    // string (a wrong index, or the payload simply never joins them
-    // itself). Combine what each one DID find rather than leaving Full
-    // Address blank when the pieces are actually sitting right there.
-    const built = composeFull(out.address, {
+  } else if (!out.fullAddress && (out.address || payload.address) && (payload.city || payload.postalCode)) {
+    // Neither source alone produced a complete address. The DOM path
+    // (extractAddress) reads `data-item-id="address"` markup that a raw,
+    // non-JS-executed fetch() response frequently does not contain at all —
+    // Maps is a JS SPA, so out.address is very often blank here even though
+    // the payload independently resolved city/state/postal/country but
+    // never composed them into one string (a wrong index, or the payload
+    // simply never joins them itself). Fall back to the payload's OWN
+    // street line (payload.address, resolved from the embedded JSON) when
+    // the DOM gave us nothing, so Full Address is not left blank just
+    // because this one fetch never got real content in the first place —
+    // the pieces are otherwise all sitting right there.
+    const usedPayloadStreet = !out.address;
+    const street = out.address || payload.address;
+    const built = composeFull(street, {
       city: payload.city, state: payload.state, postalCode: payload.postalCode, country: payload.country,
     });
     if (built) {
       out.fullAddress = built;
+      if (!out.address) out.address = street;
       out.city = out.city || payload.city;
       out.state = out.state || payload.state;
       out.postalCode = out.postalCode || payload.postalCode;
       out.country = out.country || payload.country;
-      out.via.fullAddress = 'payload:composed-from-dom-street';
+      out.via.fullAddress = usedPayloadStreet
+        ? 'payload:composed-from-payload-street'
+        : 'payload:composed-from-dom-street';
     }
   }
   if (!out.website && V.isPlausibleWebsite(payload.website)) {

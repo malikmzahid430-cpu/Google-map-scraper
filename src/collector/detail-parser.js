@@ -14,7 +14,7 @@
  */
 import * as V from './validators.js';
 import { COUNTRY_BY_CODE } from './countries.js';
-import { splitAddress } from './address.js';
+import { splitAddress, composeFull } from './address.js';
 
 /* ==================================================================== *
  * 1. Locate and parse the embedded payload
@@ -235,7 +235,21 @@ export function composeFullAddress({ formatted, components, country }) {
     const tail = full.toLowerCase();
     if (c && !tail.endsWith(c.toLowerCase())) full = `${full}, ${c}`;
   }
-  return full.replace(/\s*,\s*/g, ', ').replace(/,\s*,/g, ',').trim();
+  full = full.replace(/\s*,\s*/g, ', ').replace(/,\s*,/g, ',').trim();
+
+  // A bare street with no country to pair it with (the branch just above,
+  // when nothing better was found) is still only one part — not a complete
+  // address. Reject it HERE, after the country append had its chance,
+  // rather than never accepting it at all: a street WITH a country really
+  // is two parts. Returning '' for the plain-street case (instead of the
+  // street itself) matters a great deal — it used to poison out.fullAddress
+  // with a single-part, non-blank value that silently blocked every
+  // fallback below it in parsePlaceDetail (the structural scan and the
+  // locality-fragment scan both only run `if (!out.fullAddress)`), so a
+  // record whose formattedAddress index happened to hold just the street
+  // got permanently stuck on that lone street: never blank enough to try
+  // anything better, never complete enough to be a real Full Address.
+  return V.isPlausibleFullAddress(full) ? full : '';
 }
 
 /** Join address parts without repeating a component already contained. */
@@ -270,6 +284,68 @@ function looksLikeLocalityFragment(v) {
   return false;
 }
 
+/**
+ * JSON-LD structured data — schema.org PostalAddress inside a
+ * `<script type="application/ld+json">` block. This is a fully independent
+ * address source: it does not depend on locating or successfully parsing
+ * the APP_INITIALIZATION_STATE array payload at all, so it is tried even
+ * when that payload is missing or its shape has drifted from every
+ * candidate index this parser knows about.
+ */
+export function extractJsonLdAddress(html) {
+  if (!html || typeof html !== 'string') return null;
+  const re = /<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    let data;
+    try {
+      data = JSON.parse(m[1]);
+    } catch {
+      continue;
+    }
+    const items = Array.isArray(data) ? data : [data];
+    for (const item of items) {
+      const found = findPostalAddress(item, 0);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+/** Depth-bounded search for a schema.org PostalAddress-shaped object. */
+function findPostalAddress(node, depth) {
+  if (!node || typeof node !== 'object' || depth > 4) return null;
+
+  if (typeof node.streetAddress === 'string' || typeof node.addressLocality === 'string') {
+    const countryField = node.addressCountry;
+    const country = countryField && typeof countryField === 'object'
+      ? String(countryField.name || '').trim()
+      : String(countryField || '').trim();
+    return {
+      street: String(node.streetAddress || '').trim(),
+      city: String(node.addressLocality || '').trim(),
+      state: String(node.addressRegion || '').trim(),
+      postalCode: String(node.postalCode || '').trim(),
+      country,
+    };
+  }
+
+  if (node.address && typeof node.address === 'object') {
+    const found = findPostalAddress(node.address, depth + 1);
+    if (found) return found;
+  }
+
+  for (const key of Object.keys(node)) {
+    if (key === 'address') continue;
+    const v = node[key];
+    if (v && typeof v === 'object') {
+      const found = findPostalAddress(v, depth + 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 /** Street line = the first address component, or the head of the formatted string. */
 export function extractStreetLine(fullAddress, components) {
   if (Array.isArray(components) && typeof components[0] === 'string' && components[0].trim()) {
@@ -300,57 +376,85 @@ export function parsePlaceDetail(html) {
   };
 
   const json = extractPlaceJson(html);
-  if (!json) {
-    out.via.payload = 'none';
-    return out;
-  }
-  out.via.payload = 'parsed';
-  out.ok = true;
+  out.via.payload = json ? 'parsed' : 'none';
 
-  /* ---- website ---- */
-  const site = resolve(json, P.website, V.isPlausibleWebsite, { maxDepth: 6, maxNodes: 20000 });
-  out.website = site.value || '';
-  out.via.website = site.via;
-
-  /* ---- phone ---- */
-  const phone = resolve(json, P.phone, V.isPlausiblePhone, { maxDepth: 7, maxNodes: 20000 });
-  out.phone = phone.value || '';
-  out.via.phone = phone.via;
-
-  /* ---- address ---- */
-  const formatted = resolve(json, P.formattedAddress, V.isPlausibleFullAddress, false);
-  let formattedValue = formatted.value;
-  let formattedVia = formatted.via;
-
-  if (!formattedValue) {
-    const loose = resolve(json, P.formattedAddress, V.isPlausibleAddressLine, false);
-    formattedValue = loose.value;
-    formattedVia = loose.via;
-  }
-
+  let formattedValue = '';
+  let formattedVia = 'none';
   let components = null;
-  for (const path of P.addressComponents) {
-    const v = readPath(json, path);
-    if (Array.isArray(v) && v.filter((x) => typeof x === 'string' && x.trim()).length >= 2) {
-      components = v;
-      break;
+  let country = '';
+
+  // Everything in this block depends on having located and parsed the
+  // APP_INITIALIZATION_STATE array payload. When that payload is missing —
+  // which is exactly the scenario that used to make this whole function
+  // return empty before ANY fallback ran — website/phone/geo/category/
+  // rating/placeId simply stay unresolved, but address resolution below
+  // still gets a chance via JSON-LD, an entirely independent source.
+  if (json) {
+    out.ok = true;
+
+    /* ---- website ---- */
+    const site = resolve(json, P.website, V.isPlausibleWebsite, { maxDepth: 6, maxNodes: 20000 });
+    out.website = site.value || '';
+    out.via.website = site.via;
+
+    /* ---- phone ---- */
+    const phone = resolve(json, P.phone, V.isPlausiblePhone, { maxDepth: 7, maxNodes: 20000 });
+    out.phone = phone.value || '';
+    out.via.phone = phone.via;
+
+    /* ---- address (array-index payload) ---- */
+    const formatted = resolve(json, P.formattedAddress, V.isPlausibleFullAddress, false);
+    formattedValue = formatted.value;
+    formattedVia = formatted.via;
+
+    if (!formattedValue) {
+      const loose = resolve(json, P.formattedAddress, V.isPlausibleAddressLine, false);
+      formattedValue = loose.value;
+      formattedVia = loose.via;
+    }
+
+    for (const path of P.addressComponents) {
+      const v = readPath(json, path);
+      if (Array.isArray(v) && v.filter((x) => typeof x === 'string' && x.trim()).length >= 2) {
+        components = v;
+        break;
+      }
+    }
+
+    country = resolveCountry(json);
+
+    out.fullAddress = composeFullAddress({ formatted: formattedValue, components, country });
+
+    if (!out.fullAddress) {
+      // Last resort: scan for any string that looks like a complete address.
+      const scanned = structuralScan(json, V.isPlausibleFullAddress, { maxDepth: 8, maxNodes: 30000 });
+      if (scanned) {
+        out.fullAddress = country ? composeFullAddress({ formatted: scanned, components: null, country }) : scanned;
+        formattedVia = 'scan';
+      }
     }
   }
 
-  const country = resolveCountry(json);
-
-  out.fullAddress = composeFullAddress({
-    formatted: formattedValue,
-    components,
-    country,
-  });
-
+  // JSON-LD (schema.org PostalAddress): tried whenever the array payload
+  // didn't produce a complete address — whether because the payload was
+  // never found at all, or because its address is fragmented across
+  // indices this parser doesn't recognise. Independent of `json` above.
   if (!out.fullAddress) {
-    // Last resort: scan for any string that looks like a complete address.
-    const scanned = structuralScan(json, V.isPlausibleFullAddress, { maxDepth: 8, maxNodes: 30000 });
-    if (scanned) {
-      out.fullAddress = country ? composeFullAddress({ formatted: scanned, components: null, country }) : scanned;
-      formattedVia = 'scan';
+    const ld = extractJsonLdAddress(html);
+    if (ld && (ld.street || ld.city)) {
+      const ldCountry = country || ld.country;
+      const built = composeFull(ld.street, {
+        city: ld.city, state: ld.state, postalCode: ld.postalCode, country: ldCountry,
+      });
+      if (built) {
+        out.fullAddress = built;
+        formattedVia = 'jsonld';
+        if (!country) country = ldCountry;
+        out.ok = true;
+      } else if (!formattedValue && ld.street && V.isPlausibleAddressLine(ld.street)) {
+        formattedValue = ld.street;
+        formattedVia = 'jsonld';
+      }
     }
   }
 
@@ -367,48 +471,61 @@ export function parsePlaceDetail(html) {
     out.city = ''; out.state = ''; out.postalCode = ''; out.country = country || '';
     // Nothing composed into a full string — look for a standalone locality
     // fragment ("City, ST 12345") anywhere in the payload.
-    const frag = structuralScan(json, looksLikeLocalityFragment, { maxDepth: 8, maxNodes: 30000 });
-    if (frag) {
-      const split = splitAddress(frag);
-      if (split.city || split.postalCode || split.state) {
-        out.city = split.city; out.state = split.state; out.postalCode = split.postalCode;
-        out.country = split.country || country || '';
-        out.via.locality = 'scan';
+    if (json) {
+      const frag = structuralScan(json, looksLikeLocalityFragment, { maxDepth: 8, maxNodes: 30000 });
+      if (frag) {
+        const split = splitAddress(frag);
+        if (split.city || split.postalCode || split.state) {
+          out.city = split.city; out.state = split.state; out.postalCode = split.postalCode;
+          out.country = split.country || country || '';
+          out.via.locality = 'scan';
+        }
       }
     }
   }
 
-  out.address = extractStreetLine(out.fullAddress, components) || (formattedValue ? String(formattedValue).split(',')[0].trim() : '');
+  // Components (a real addressComponents array) and formattedValue (a
+  // resolved candidate street, even a bare one composeFullAddress declined
+  // to promote to Full Address) are both genuine street sources. Try those
+  // BEFORE falling back to out.fullAddress's first comma segment — when
+  // Full Address came from the locality-fragment/structural scan rather
+  // than a real street+components composition, its first segment is the
+  // CITY, not the street, and must never be mistaken for one.
+  out.address = extractStreetLine('', components)
+    || (formattedValue ? String(formattedValue).split(',')[0].trim() : '')
+    || extractStreetLine(out.fullAddress, components);
   out.via.fullAddress = out.fullAddress ? formattedVia : 'none';
   out.via.country = country ? 'found' : 'absent';
 
-  /* ---- geo ---- */
-  const lat = resolve(json, P.lat, V.isPlausibleLat, false);
-  const lng = resolve(json, P.lng, V.isPlausibleLng, false);
-  if (lat.value !== '' && lng.value !== '') {
-    out.latitude = String(lat.value);
-    out.longitude = String(lng.value);
-    out.via.geo = lat.via;
-  } else {
-    out.via.geo = 'none';
+  if (json) {
+    /* ---- geo ---- */
+    const lat = resolve(json, P.lat, V.isPlausibleLat, false);
+    const lng = resolve(json, P.lng, V.isPlausibleLng, false);
+    if (lat.value !== '' && lng.value !== '') {
+      out.latitude = String(lat.value);
+      out.longitude = String(lng.value);
+      out.via.geo = lat.via;
+    } else {
+      out.via.geo = 'none';
+    }
+
+    /* ---- place id ---- */
+    const pid = readPath(json, P.placeId[0]) ?? readPath(json, P.placeId[1]);
+    if (typeof pid === 'string' && pid.length > 3 && pid.length < 120) out.placeId = pid;
+
+    /* ---- category ---- */
+    for (const path of P.categories) {
+      const v = readPath(json, path);
+      if (Array.isArray(v) && typeof v[0] === 'string' && v[0].trim()) { out.category = v[0].trim(); break; }
+      if (typeof v === 'string' && v.trim()) { out.category = v.trim(); break; }
+    }
+
+    /* ---- rating (payload values are already numeric, so no text parsing) ---- */
+    const rv = readPath(json, P.ratingValue[0]) ?? readPath(json, P.ratingValue[1]);
+    if (typeof rv === 'number' && rv >= 0 && rv <= 5) out.rating = rv.toFixed(1);
+    const rc = readPath(json, P.reviewCount[0]) ?? readPath(json, P.reviewCount[1]);
+    if (typeof rc === 'number' && rc >= 0) out.reviewCount = String(Math.round(rc));
   }
-
-  /* ---- place id ---- */
-  const pid = readPath(json, P.placeId[0]) ?? readPath(json, P.placeId[1]);
-  if (typeof pid === 'string' && pid.length > 3 && pid.length < 120) out.placeId = pid;
-
-  /* ---- category ---- */
-  for (const path of P.categories) {
-    const v = readPath(json, path);
-    if (Array.isArray(v) && typeof v[0] === 'string' && v[0].trim()) { out.category = v[0].trim(); break; }
-    if (typeof v === 'string' && v.trim()) { out.category = v.trim(); break; }
-  }
-
-  /* ---- rating (payload values are already numeric, so no text parsing) ---- */
-  const rv = readPath(json, P.ratingValue[0]) ?? readPath(json, P.ratingValue[1]);
-  if (typeof rv === 'number' && rv >= 0 && rv <= 5) out.rating = rv.toFixed(1);
-  const rc = readPath(json, P.reviewCount[0]) ?? readPath(json, P.reviewCount[1]);
-  if (typeof rc === 'number' && rc >= 0) out.reviewCount = String(Math.round(rc));
 
   return out;
 }

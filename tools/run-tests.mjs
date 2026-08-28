@@ -358,6 +358,95 @@ group('Place detail — same-origin fetch, no tab (extraction logic)');
   check('no street from any source means Full Address correctly stays blank, not a locality-only fragment',
     noCombine.fullAddress === '', noCombine.fullAddress);
 
+  // --- THE ROOT-CAUSE FIX: a raw fetch() response is a JS SPA that never
+  //     executed its JS, so extractAddress (DOM) very often finds NOTHING —
+  //     out.address stays blank. Before this fix, the combine branch above
+  //     required out.address (DOM) to be non-blank, so Full Address stayed
+  //     blank forever even when the payload independently resolved a real
+  //     street PLUS city/state/postal. Now the payload's own street
+  //     (payload.address) is used as the combine seed when DOM gave nothing. ---
+  const richJson6 = new Array(200).fill(null);
+  // A bare street at a formattedAddress candidate index (index 18 — no
+  // comma, so it is a plausible address LINE but not a plausible FULL
+  // address) plus a genuine locality fragment ("City, ST ZIP") sitting at
+  // an index none of the known addressComponents/formattedAddress paths
+  // reach — findable only by the structural scan. This is exactly the
+  // shape a real Google payload takes when its formattedAddress index
+  // holds only the street and the addressComponents index has drifted.
+  richJson6[18] = '456 Rich Payload Ave';
+  richJson6[145] = 'Testburg, TS 55555';
+  const richJson = new Array(7); richJson[6] = richJson6;
+  const richHtml = ")]}'\n" + JSON.stringify(richJson);
+
+  const domFoundNothing = { ...blank, address: '' };
+  const richCombined = placeDetail.mergeEmbeddedPayload(domFoundNothing, richHtml);
+  check('with NO DOM street at all, Full Address is still composed from the payload-only street + locality',
+    richCombined.fullAddress === '456 Rich Payload Ave, Testburg, TS 55555', richCombined.fullAddress);
+  check('the payload-derived street backfills the short Address field too, not just Full Address',
+    richCombined.address === '456 Rich Payload Ave', richCombined.address);
+  check('via records that the street came from the payload, not the DOM',
+    richCombined.via.fullAddress === 'payload:composed-from-payload-street', richCombined.via.fullAddress);
+
+  // --- the SAME shape, checked directly against parsePlaceDetail: a bare
+  //     street candidate must never get smuggled through as a fake "Full
+  //     Address" (composeFullAddress used to do exactly that, which
+  //     permanently blocked the locality scan below it from ever running). ---
+  const richPayload = detailParser.parsePlaceDetail(richHtml);
+  check('a bare street alone is never presented as a complete Full Address',
+    richPayload.fullAddress !== '456 Rich Payload Ave', richPayload.fullAddress);
+  check('the genuine street is still correctly recovered as the short Address field',
+    richPayload.address === '456 Rich Payload Ave', richPayload.address);
+  check('city/state/postal are still recovered from the separately-found locality fragment',
+    richPayload.city === 'Testburg' && richPayload.state === 'TS' && richPayload.postalCode === '55555',
+    JSON.stringify({ city: richPayload.city, state: richPayload.state, postalCode: richPayload.postalCode }));
+
+  // --- extractPlaceJson finds nothing at all (no APP_INITIALIZATION_STATE
+  //     blob in the raw response) — parsePlaceDetail must NOT bail out
+  //     empty; it should still try JSON-LD, an entirely independent source. ---
+  const noPayloadButJsonLd = `<html><head>
+    <script type="application/ld+json">
+    {"@context":"https://schema.org","@type":"LocalBusiness","name":"Ld Only Co",
+     "address":{"@type":"PostalAddress","streetAddress":"789 Ld Only Rd",
+     "addressLocality":"Ldville","addressRegion":"LD","postalCode":"77777",
+     "addressCountry":"United States"}}
+    </script></head><body>no APP_INITIALIZATION_STATE here at all</body></html>`;
+  check('extractPlaceJson correctly reports nothing found for this HTML (sanity check for the next assertions)',
+    detailParser.extractPlaceJson(noPayloadButJsonLd) === null);
+  const ldOnly = detailParser.parsePlaceDetail(noPayloadButJsonLd);
+  check('parsePlaceDetail no longer bails out empty when the array payload is missing',
+    ldOnly.ok === true, JSON.stringify(ldOnly));
+  check('Full Address is populated entirely from JSON-LD when the array payload cannot be found',
+    ldOnly.fullAddress === '789 Ld Only Rd, Ldville, LD 77777, United States', ldOnly.fullAddress);
+  check('the street line is also recovered from JSON-LD', ldOnly.address === '789 Ld Only Rd', ldOnly.address);
+  check('city/state/postal/country are split correctly from the JSON-LD-composed address',
+    ldOnly.city === 'Ldville' && ldOnly.state === 'LD' && ldOnly.postalCode === '77777' && ldOnly.country === 'United States',
+    JSON.stringify({ city: ldOnly.city, state: ldOnly.state, postalCode: ldOnly.postalCode, country: ldOnly.country }));
+
+  // --- extractJsonLdAddress directly ---
+  const ldAddr = detailParser.extractJsonLdAddress(noPayloadButJsonLd);
+  check('extractJsonLdAddress finds the PostalAddress block directly',
+    ldAddr && ldAddr.street === '789 Ld Only Rd' && ldAddr.city === 'Ldville', JSON.stringify(ldAddr));
+  check('extractJsonLdAddress returns null when there is no JSON-LD at all',
+    detailParser.extractJsonLdAddress('<html><body>nothing here</body></html>') === null);
+  check('extractJsonLdAddress ignores malformed JSON-LD rather than throwing',
+    detailParser.extractJsonLdAddress('<script type="application/ld+json">{not valid json</script>') === null);
+
+  // --- the fix must actually reach production: mergeEmbeddedPayload() used
+  //     to only call parsePayload() when extractPlaceJson() already found
+  //     the array blob, which made the JSON-LD fallback above dead code on
+  //     the real fetchPlaceDetail() path (the one users actually hit) even
+  //     though parsePlaceDetail() itself now handles it correctly in
+  //     isolation. Confirm the merge step gets there too. ---
+  const mergeLdOnly = placeDetail.mergeEmbeddedPayload(blank, noPayloadButJsonLd);
+  check('mergeEmbeddedPayload finds a JSON-LD-only address (array payload absent) via the production path',
+    mergeLdOnly.fullAddress === '789 Ld Only Rd, Ldville, LD 77777, United States', mergeLdOnly.fullAddress);
+
+  // --- when BOTH the array payload and JSON-LD are absent, parsePlaceDetail
+  //     still returns a well-formed blank object, not a crash. ---
+  const nothingAtAll = detailParser.parsePlaceDetail('<html><body>totally empty page</body></html>');
+  check('parsePlaceDetail returns a clean blank object (not a crash) when nothing is found at all',
+    nothingAtAll.ok === false && nothingAtAll.fullAddress === '' && nothingAtAll.address === '');
+
   // --- fetchPlaceDetail: the actual network entry point, wired end to end ---
   class FakeDOMParser {
     parseFromString() {
