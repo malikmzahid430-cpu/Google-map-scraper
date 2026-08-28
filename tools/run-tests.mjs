@@ -390,6 +390,32 @@ group('Place detail — same-origin fetch, no tab (extraction logic)');
   const failedFetch = await placeDetail.fetchPlaceDetail('https://www.google.com/maps/place/Unreachable', { timeoutMs: 500 });
   check('a failed fetch reports ok:false with an error, not a thrown exception', failedFetch.ok === false && !!failedFetch.error);
 
+  // --- diagnosePlaceDetail: the live-probe used by Diagnostics to show WHY
+  //     detail resolution is or isn't finding anything, not just whether it did ---
+  globalThis.DOMParser = FakeDOMParser;
+  globalThis.fetch = async (url) => ({ ok: true, status: 200, url: String(url), text: async () => fetchHtml });
+  const diagOk = await placeDetail.diagnosePlaceDetail('https://www.google.com/maps/place/Fetched+Place', { timeoutMs: 500 });
+  check('diagnosePlaceDetail reports the HTTP status', diagOk.httpStatus === 200);
+  check('diagnosePlaceDetail reports the response length', diagOk.responseLength === fetchHtml.length, `${diagOk.responseLength} vs ${fetchHtml.length}`);
+  check('diagnosePlaceDetail correctly reports an embedded payload was found', diagOk.payloadFound === true);
+  check('diagnosePlaceDetail extracts the same data fetchPlaceDetail would', diagOk.data.businessName === 'Fetched Place' && diagOk.data.phone === '+1 555 000 2222');
+  check('diagnosePlaceDetail includes a readable excerpt of the response', diagOk.excerpt.length > 0 && diagOk.excerpt.length <= 600);
+  check('diagnosePlaceDetail strips <script> content from the excerpt', !diagOk.excerpt.includes('<script'));
+
+  // A response that never contains real place data — e.g. a consent
+  // interstitial instead of the place page — must be visibly flagged as
+  // such (no payload, blank fields), not silently reported as "resolved".
+  // Restore the REAL DOMParser first — FakeDOMParser above ignores its
+  // input entirely and always returns the same canned document, which
+  // would make this scenario pass for the wrong reason.
+  globalThis.DOMParser = priorDomParser;
+  const consentHtml = '<html><body><h1>Before you continue to Google Maps</h1><p>We use cookies...</p></body></html>';
+  globalThis.fetch = async (url) => ({ ok: true, status: 200, url: 'https://consent.google.com/ml?continue=' + url, text: async () => consentHtml });
+  const diagRedirected = await placeDetail.diagnosePlaceDetail('https://www.google.com/maps/place/Blocked+Place', { timeoutMs: 500 });
+  check('diagnosePlaceDetail detects a redirect away from the place URL', diagRedirected.finalUrl !== diagRedirected.url, JSON.stringify({ url: diagRedirected.url, finalUrl: diagRedirected.finalUrl }));
+  check('a consent/interstitial response correctly shows no embedded payload', diagRedirected.payloadFound === false);
+  check('a consent/interstitial response correctly leaves Full Address blank rather than inventing one', diagRedirected.data.fullAddress === '');
+
   globalThis.DOMParser = priorDomParser;
   globalThis.fetch = priorFetch;
 }

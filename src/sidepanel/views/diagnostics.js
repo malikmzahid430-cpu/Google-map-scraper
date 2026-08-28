@@ -36,6 +36,7 @@ export function renderDiagnostics(state) {
   ${renderModules(d.modules)}
   ${renderSheets(d.sheets)}
   ${renderSample(d.page)}
+  ${renderDetailProbe(d.page)}
 
   <div class="card tight">
     <button class="primary block" data-act="rerun">Run diagnostics again</button>
@@ -206,6 +207,59 @@ function renderSample(page) {
       </tbody></table>
     </div>
     <p class="hint tiny">The parser's real output for the first result on screen. If a value here is wrong, the selector for that field needs updating — they all live in <code>src/collector/selectors.js</code>.</p>
+  </div>`;
+}
+
+/**
+ * Live fetch-and-extract probe against the first card's own place page —
+ * the exact mechanism detail resolution runs for every record, exposed
+ * here with full visibility instead of just a pass/fail count. Built to
+ * diagnose "detail resolution completes but Full Address is always blank"
+ * reports: this shows whether the fetch itself is even reaching real
+ * content, or whether it succeeds but the page doesn't contain what the
+ * parser expects.
+ */
+function renderDetailProbe(page) {
+  const probe = page && page.detailProbe;
+  if (!probe) return '';
+
+  if (!probe.ok) {
+    return `
+    <div class="card">
+      <h2>Live detail-fetch probe</h2>
+      ${banner('error', `<strong>The fetch itself failed.</strong><br><span class="hint tiny">${esc(probe.error || 'unknown error')}</span>`)}
+      <p class="hint tiny" style="margin-top:8px">This is the same fetch detail resolution runs for every record — if it fails here, it is almost certainly failing for all of them the same way.</p>
+    </div>`;
+  }
+
+  const data = probe.data || {};
+  const via = data.via || {};
+  const redirected = probe.finalUrl && probe.url && probe.finalUrl !== probe.url;
+  const fields = ['fullAddress', 'address', 'website', 'phone'];
+
+  return `
+  <div class="card">
+    <h2>Live detail-fetch probe</h2>
+    <div class="diag-list">
+      ${row(['HTTP status', probe.httpStatus === 200 ? 'ok' : 'degraded', String(probe.httpStatus ?? 'unknown')])}
+      ${row(['Response size', probe.responseLength > 1000 ? 'ok' : 'degraded', `${probe.responseLength} characters`])}
+      ${row(['Redirected', redirected ? 'degraded' : 'ok', redirected ? `yes — landed on ${probe.finalUrl}` : 'no, stayed on the place URL'])}
+      ${row(['Embedded JSON payload found', probe.payloadFound ? 'ok' : 'degraded', probe.payloadFound ? 'yes' : 'no — APP_INITIALIZATION_STATE was not found in the response'])}
+    </div>
+    <div class="divider"></div>
+    <div class="table-wrap">
+      <table><tbody>
+        ${fields.map((k) => `<tr>
+          <td class="muted" style="width:110px">${esc(k)}</td>
+          <td>${data[k] ? esc(String(data[k]).slice(0, 90)) : '<span class="muted">— blank —</span>'}</td>
+          <td class="muted" style="width:170px">${esc(via[k] || '—')}</td>
+        </tr>`).join('')}
+      </tbody></table>
+    </div>
+    <p class="hint tiny" style="margin-top:8px">The third column is HOW each value resolved (or why it didn't) — <code>dom:…</code> means the fetched page's own HTML had it, <code>payload:…</code> means it came from the embedded JSON, <code>none</code> means neither found anything.</p>
+    <div class="divider"></div>
+    <p class="hint tiny" style="margin-bottom:4px">First 600 characters of the actual response (scripts/styles stripped) — if this doesn't look like a Google Maps place page, that is the root cause:</p>
+    <pre class="diag-excerpt">${esc(probe.excerpt || '(empty response)')}</pre>
   </div>`;
 }
 

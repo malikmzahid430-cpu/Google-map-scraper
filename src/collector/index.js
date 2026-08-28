@@ -14,7 +14,7 @@ import * as collector from './collector.js';
 import * as dom from './dom.js';
 import * as S from './selectors.js';
 import { parseCard } from './card-parser.js';
-import { fetchPlaceDetail } from './place-detail.js';
+import { fetchPlaceDetail, diagnosePlaceDetail } from './place-detail.js';
 
 const log = createLogger('content');
 
@@ -96,7 +96,7 @@ const handlers = {
    * Live page probe for the Diagnostics view. Reads the page without
    * collecting anything, so it is safe to run at any time.
    */
-  [MSG.DIAG_PAGE_PROBE]: () => {
+  [MSG.DIAG_PAGE_PROBE]: async () => {
     const feed = dom.getFeed();
     const cards = dom.getCards();
     const sample = cards.length ? cards[0] : null;
@@ -110,6 +110,20 @@ const handlers = {
       }
     }
 
+    // Live fetch-and-extract probe against the first card's own place page —
+    // the same mechanism detail resolution uses for every record, run here
+    // once, with full visibility (HTTP status, response size, whether a
+    // redirect happened, an excerpt of what actually came back) instead of
+    // the pass/fail a real resolution run reports.
+    let detailProbe = null;
+    if (sampleParse && sampleParse.mapsUrl) {
+      try {
+        detailProbe = await diagnosePlaceDetail(sampleParse.mapsUrl, { timeoutMs: 10000 });
+      } catch (err) {
+        detailProbe = { ok: false, error: String(err && err.message) };
+      }
+    }
+
     return ok({
       href: location.href,
       onMapsPage: dom.isMapsSearchPage(),
@@ -119,6 +133,7 @@ const handlers = {
       atEnd: dom.feedReachedEnd(),
       query: dom.getSearchQuery(),
       sample: sampleParse,
+      detailProbe,
       diagnostics: diag.snapshot(),
     });
   },

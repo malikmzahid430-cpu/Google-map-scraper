@@ -658,6 +658,23 @@ td a:hover { text-decoration: underline; }
 .diag.fail .icon { color: var(--danger); }
 .diag.unknown .icon { color: var(--text-3); }
 
+.diag-excerpt {
+  margin: 0;
+  padding: 9px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--hairline-2);
+  background: var(--glass);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+  user-select: text;
+}
+
 /* -------------------------------- queue -------------------------------- */
 
 .queue-item {

@@ -361,11 +361,11 @@ async function fetchWithTimeout(url, timeoutMs) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, { credentials: 'include', signal: controller.signal });
-    if (!res.ok) return { ok: false, text: '', error: `HTTP ${res.status}` };
-    return { ok: true, text: await res.text(), error: null };
+    if (!res.ok) return { ok: false, text: '', error: `HTTP ${res.status}`, status: res.status, finalUrl: res.url };
+    return { ok: true, text: await res.text(), error: null, status: res.status, finalUrl: res.url };
   } catch (err) {
     const message = err && err.name === 'AbortError' ? `timed out after ${timeoutMs}ms` : String(err && err.message || err);
-    return { ok: false, text: '', error: message };
+    return { ok: false, text: '', error: message, status: null, finalUrl: '' };
   } finally {
     clearTimeout(timer);
   }
@@ -394,4 +394,61 @@ export async function fetchPlaceDetail(mapsUrl, opts = {}) {
 
   const merged = mergeEmbeddedPayload(parsed, res.text);
   return { ok: true, data: withStatuses(merged), error: null };
+}
+
+/**
+ * DIAGNOSTIC ONLY — never used by the production resolve path. Runs the
+ * exact same fetch + extraction as fetchPlaceDetail(), but also reports the
+ * HTTP status, the final URL (after any redirect — a same-origin request
+ * that redirects to a consent/login page is invisible to the normal path
+ * and would otherwise fail silently), the raw response length, whether an
+ * embedded JSON payload was found at all, and a short sanitized excerpt of
+ * what actually came back. This is the visibility needed to distinguish an
+ * unexpected page format (Google returned something this parser doesn't
+ * recognise) from no real content being returned at all — those two
+ * failure modes look identical from outside.
+ */
+export async function diagnosePlaceDetail(mapsUrl, opts = {}) {
+  const timeoutMs = opts.timeoutMs || 12000;
+  const url = placePageUrl(mapsUrl);
+
+  const res = await fetchWithTimeout(url, timeoutMs);
+  if (!res.ok) {
+    return {
+      ok: false, error: res.error, url, finalUrl: res.finalUrl || '',
+      httpStatus: res.status, responseLength: 0, payloadFound: false, excerpt: '', data: null,
+    };
+  }
+
+  let parsed;
+  try {
+    const doc = new DOMParser().parseFromString(res.text, 'text/html');
+    parsed = extractFromDocument(doc, url);
+  } catch (err) {
+    parsed = { businessName: '', category: '', rating: '', reviewCount: '', address: '', fullAddress: '', city: '', state: '', postalCode: '', country: '', website: '', phone: '', latitude: '', longitude: '', via: { parseError: String(err && err.message) } };
+  }
+
+  let payloadFound = false;
+  try { payloadFound = !!extractPlaceJson(res.text); } catch { /* treated as not found */ }
+
+  const merged = mergeEmbeddedPayload(parsed, res.text);
+
+  // Strip script/style bodies so a diagnostics report a user pastes
+  // somewhere never carries anything large or executable — just enough
+  // plain markup to see what kind of page actually came back.
+  const excerpt = String(res.text || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '[script]')
+    .replace(/<style[\s\S]*?<\/style>/gi, '[style]')
+    .slice(0, 600);
+
+  return {
+    ok: true,
+    url,
+    finalUrl: res.finalUrl || url,
+    httpStatus: res.status,
+    responseLength: (res.text || '').length,
+    payloadFound,
+    excerpt,
+    data: merged,
+  };
 }

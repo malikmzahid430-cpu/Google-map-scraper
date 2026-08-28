@@ -1,5 +1,39 @@
 # Changelog
 
+## 4.5.2 — live detail-fetch diagnostic probe
+
+Scope: `src/collector/place-detail.js`, `src/collector/index.js`,
+`src/sidepanel/views/diagnostics.js`, `src/sidepanel/styles.css`.
+
+### Added — a way to actually see why Full Address stays empty
+A report came back that Full Address is blank for every record in a job,
+even though detail resolution ran to completion. That combination — runs,
+finishes, finds nothing for anyone — points at the fetch or extraction
+itself silently failing every time, but there was no way to see what the
+fetch actually returned to tell "Google's response doesn't look like a
+normal place page" apart from "the fetch never reached real content in the
+first place." A resolved record's own status can't distinguish these
+either: `gotSomething` in `detail-resolver.js` counts as resolved if
+website OR phone was (re-)found, even when Full Address specifically
+wasn't, so a job that shows "N/N resolved" doesn't prove Full Address
+extraction is working.
+
+`place-detail.js:diagnosePlaceDetail()` runs the exact same fetch that
+detail resolution uses for one place, but reports the HTTP status, whether
+the request got redirected somewhere else (e.g. a consent/login
+interstitial — invisible to the normal path), the raw response length,
+whether an embedded JSON payload was found at all, and a sanitized excerpt
+of the first 600 characters of whatever actually came back. Diagnostics →
+**Live detail-fetch probe** now runs this against the first card on screen
+and shows all of it, plus each field's resolved value and exactly which
+source it came from (`dom:…` / `payload:…` / `none`).
+
+Purely additive — a new diagnostic-only function alongside the unchanged
+production `fetchPlaceDetail()`, never called from the resolve path. 285/285
+tests pass, including the new probe's own coverage (HTTP status, redirect
+detection, and a simulated consent-page response correctly showing no
+payload and a blank Full Address instead of inventing one).
+
 ## 4.5.1 — fix Address corrupted by icon-only amenity badges
 
 Found from a real export: the Address column showed an unreadable `` box
