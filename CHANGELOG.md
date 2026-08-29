@@ -1,5 +1,39 @@
 # Changelog
 
+## 4.5.4 — verified 4.5.3 live in a real browser; found and fixed one more gap
+
+Scope: `src/collector/place-detail.js`, `tools/run-tests.mjs`.
+
+### Tested — not just unit tests this time
+Before handing 4.5.3 back for real-world loading, it was run for real: the
+packaged extension was loaded unpacked into an actual Chromium (via
+Playwright), confirmed the manifest is valid, the service worker starts
+clean, and the side panel renders with zero console errors. Separately, the
+real `fetchPlaceDetail()`/`mergeEmbeddedPayload()` code (not the Node test
+harness — the browser's own `fetch()` and `DOMParser`) was exercised against
+four realistic response shapes via network interception, standing in for
+Google's actual response since this sandbox's network policy blocks
+`google.com` outright: a bare-street-plus-separate-locality payload (the
+exact shape 4.5.3 targeted), an array-payload-absent/JSON-LD-only page, a
+page with nothing usable at all, and a plain intact `addressComponents`
+array. All four now correctly produce a complete Full Address.
+
+### Fixed — the short Address field wasn't backfilled from a payload-only Full Address
+That live run surfaced one more real gap: when the payload's own Full
+Address resolved as already complete on its own (`mergeEmbeddedPayload()`'s
+first branch — the straightforward case, unrelated to the three bugs fixed
+in 4.5.3), the short **Address** field was never backfilled from it, even
+though Full Address was. In production this is usually masked because
+Phase-1 card scraping already fills Address for most records, but a record
+relying on the payload alone for its street would show a populated Full
+Address next to a blank Address. Fixed: `out.address` is now backfilled
+from the payload's street (or Full Address's own split-out street) in that
+branch too, matching what the combine branch already did.
+
+302/302 tests pass (2 new, covering exactly this), isolation and build
+verification clean, and the extension reloads cleanly with no console
+errors.
+
 ## 4.5.3 — fix Full Address staying blank across an entire job
 
 Scope: `src/collector/detail-parser.js`, `src/collector/place-detail.js`,

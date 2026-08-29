@@ -296,6 +296,11 @@ export function mergeEmbeddedPayload(detail, html) {
     out.postalCode = out.postalCode || c.postalCode;
     out.country = out.country || c.country;
     out.via.fullAddress = `payload:${payload.via.fullAddress}`;
+    // The DOM found no street of its own (out.address blank), but the
+    // payload just supplied a complete Full Address on its own — its
+    // street component belongs in the short Address field too, not just
+    // buried inside Full Address.
+    if (!out.address && (c.street || payload.address)) out.address = c.street || payload.address;
   } else if (!out.fullAddress && (out.address || payload.address) && (payload.city || payload.postalCode)) {
     // Neither source alone produced a complete address. The DOM path
     // (extractAddress) reads `data-item-id="address"` markup that a raw,

@@ -324,6 +324,8 @@ group('Place detail — same-origin fetch, no tab (extraction logic)');
   check('payload fills website the DOM did not have', filled.website === 'https://payload-example.com');
   check('payload fills phone the DOM did not have', filled.phone === '+1 904 555 0199');
   check('payload fills Full Address the DOM did not have', filled.fullAddress === '99 Payload Ave, Testville, TS 99999, United States');
+  check('payload also backfills the short Address field when the DOM found no street at all — found via live browser testing, not a pre-written scenario',
+    filled.address === '99 Payload Ave', filled.address);
 
   const partiallyFound = { ...blank, website: 'https://dom-found-this.com' };
   const notOverwritten = placeDetail.mergeEmbeddedPayload(partiallyFound, html);
