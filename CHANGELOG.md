@@ -1,5 +1,78 @@
 # Changelog
 
+## 4.7.2 — Full Address parser was reading CSS/style content as an address
+
+Scope: `src/collector/detail-parser.js`, `tools/run-tests.mjs`. No scraper,
+enrichment, queue, filter, dedupe, storage, export, UI, or address-DOM
+extraction (`place-detail.js`'s `extractAddress()`) logic changed.
+
+### The bug, precisely
+Immediately after 4.7.1 shipped, a report came back with values like
+`Address: 0 1px 0 rgba(0, 0` / `Full Address: 0 1px 0 rgba(0, 0, 0, .15)` —
+a literal CSS `box-shadow` value, not an address. Traced backward before any
+code change: `extractFullAddressByAnchor()` and `extractFullAddressGeneric()`
+(both in `detail-parser.js`, added in 4.6.0) ran their regex search over the
+*entire raw HTTP response text*, including `<style>` blocks and inline
+`style="..."` attributes. 4.7.1's own `isPlausibleAddressLine()` fix
+(`/^\d{1,6}[a-zA-Z]?(?:-\d+)?\s+\S/` — "leading house number, space, more
+text") was reproduced as matching `"0 1px 0 rgba(0, 0, 0, .15)"` too: a CSS
+shorthand value ("0", space, more text) is structurally indistinguishable
+from a short street address to any shape-only validator. Strengthening the
+validator again would only have narrowed which CSS values slipped through,
+not closed the gap — the real defect was *where* the search was allowed to
+look, not what it accepted once it got there.
+
+`extractAddress()` in `place-detail.js` was independently confirmed NOT
+implicated: it only reads properties off the one DOM element matched by
+`[data-item-id="address"]`, never raw HTML text, so it was left unmodified.
+
+### The fix — restrict the source, not the content filter
+Added `extractScriptText(html)`: strips every `<style>...</style>` block and
+every inline `style="..."` / `style='...'` attribute first (a structural
+exclusion — CSS never lives anywhere else), then extracts and concatenates
+only the content of `<script>...</script>` tags, since that is the only
+place Google's embedded JSON/address data actually lives. When a response
+has no `<script>` tags at all (the bare same-origin-fetch XHR-body shape,
+which is not HTML at all), it falls back to the style-stripped whole text,
+so a legitimate address in a tag-free response still resolves.
+
+`extractFullAddressByAnchor()` and `extractFullAddressGeneric()` now search
+`extractScriptText(rawText)` instead of the raw response text — one line
+changed in each. No new blacklist was added as the primary mechanism; the
+existing Google-internal-data checks from 4.7.1 stay in place as a secondary
+safety layer only. `extractPlaceJson()`/`structuralScan()`/
+`composeFullAddress()`/`extractJsonLdAddress()` (the already-correct JSON-LD
+and structural-JSON paths) were not touched.
+
+### Proof, not just "it compiles"
+11 new tests: the exact reported CSS value alongside a real address (real
+address found, CSS never returned, in either function); a CSS-only page
+with no address anywhere (blank, not the CSS); an inline `style=""`
+attribute alone; the 4.7.1 Google-internal-data reproduction re-verified
+still rejected; two plain real addresses (including the hyphenated-unit
+case, the shape closest to a CSS shorthand value) re-verified still found;
+the no-`<script>`-tag case confirmed CSS still never leaks through; the
+bare-XHR-body-with-no-HTML-wrapper case confirmed still resolvable via both
+functions; `extractAddress()` confirmed byte-for-byte unchanged and still
+working; and an end-to-end `mergeEmbeddedPayload()` check that CSS sitting
+alongside a real address in the same response never reaches `address` or
+`fullAddress`.
+
+Re-ran the 20-business live-browser suite with every fixture wrapped in a
+realistic page containing genuine `<style>` blocks with box-shadow/rgba CSS
+(the exact reported shape) plus inline `style=""` attributes on every
+element, to stress the fix end to end rather than trust the isolated unit
+tests alone: **Correct Full Address: 20/20, Missing Full Address: 0/20,
+Garbage Full Address: 0/20, CSS captured as address: 0, Google internal data
+captured as address: 0, Technical errors: 0, individual Google Maps tabs
+opened: 0.** Also re-ran the 4.7.1 Google-internal-data live-browser
+reproductions (metadata alongside a real address; metadata with no real
+address at all) — both still pass.
+
+371/371 tests pass (11 new). Isolation and build verification clean.
+`chrome.tabs.create` unchanged — still the same two pre-existing, unrelated
+call sites. Individual business tabs opened: 0.
+
 ## 4.7.1 — stop Google's own internal data from being read as an address
 
 Scope: `src/collector/validators.js`, `src/collector/detail-parser.js`,

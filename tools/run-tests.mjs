@@ -308,6 +308,94 @@ group('Address validator rejects Google-internal data — reported bug reproduct
 }
 
 /* ================================================================== */
+group('Full Address raw-text search confined to <script> content — CSS/style never a candidate');
+
+{
+  // The exact bug: <style>.x{box-shadow: 0 1px 0 rgba(0, 0, 0, .15)}</style>
+  // reads as "digit, space, more text, comma, more text" — structurally
+  // identical to a street address to a regex, no matter how the content is
+  // validated afterward. The fix is a SOURCE boundary (only <script>
+  // content is searched, <style> and inline style="" are stripped first),
+  // not another content blacklist.
+
+  // TEST 1: CSS present AND a legitimate address inside script data — the
+  // real address must be found, the CSS must never be returned.
+  const t1 = `<html><head><style>
+  .some-google-class { box-shadow: 0 1px 0 rgba(0, 0, 0, .15); }
+  </style></head><body>
+  <script>var boot = )]}'
+  [null,null,null,null,null,null,[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"7006 Foothill Blvd, Tujunga, CA 91042, United States"]];
+  </script>
+  </body></html>`;
+  check('TEST 1: real address found alongside CSS, CSS never returned',
+    detailParser.extractFullAddressGeneric(t1) === '7006 Foothill Blvd, Tujunga, CA 91042, United States',
+    detailParser.extractFullAddressGeneric(t1));
+
+  // TEST 2: CSS present, no legitimate address anywhere -> blank, not the CSS.
+  const t2 = '<html><head><style>.x{box-shadow: 0 1px 0 rgba(0, 0, 0, .15); border-radius: 8px;}</style></head><body>no data here</body></html>';
+  check('TEST 2: CSS-only page (no address anywhere) yields blank',
+    detailParser.extractFullAddressGeneric(t2) === '', detailParser.extractFullAddressGeneric(t2));
+
+  // TEST 3: inline style="" attribute, no <script> tag at all -> blank.
+  const t3 = '<div style="box-shadow: 0 1px 0 rgba(0, 0, 0, .15)">Some Business</div>';
+  check('TEST 3: inline style="" attribute never becomes a candidate',
+    detailParser.extractFullAddressGeneric(t3) === '', detailParser.extractFullAddressGeneric(t3));
+
+  // TEST 4: Google internal/obfuscated data (the previous report) — still
+  // blocked, now via BOTH the source boundary and the 4.7.1 validator.
+  const t4 = ")]}'\n" + JSON.stringify(['boq_x', '4oR0.2021.O/m=GfLzUe, tNOPW, cZ2KIb, Rq2f7d, omhq0, MJcXSb, WEtKm, B863O']);
+  check('TEST 4: Google internal data still never returned',
+    detailParser.extractFullAddressGeneric(t4) === '', detailParser.extractFullAddressGeneric(t4));
+
+  // TEST 5 & 6: real addresses (plain and hyphenated-unit) must still be
+  // found via the anchor path once confined to <script> content.
+  const t5 = ")]}'\n" + JSON.stringify(['2105 E Mariposa Rd, Stockton, CA 95205, United States']);
+  check('TEST 5: plain real address still found via anchor',
+    detailParser.extractFullAddressByAnchor(t5, '2105 E Mariposa Rd') === '2105 E Mariposa Rd, Stockton, CA 95205, United States');
+
+  const t6 = ")]}'\n" + JSON.stringify(['6215-1 Wilson Blvd Building 1, Jacksonville, FL 32210, United States']);
+  check('TEST 6: hyphenated-unit real address still found via anchor',
+    detailParser.extractFullAddressByAnchor(t6, '6215-1 Wilson Blvd Building 1') === '6215-1 Wilson Blvd Building 1, Jacksonville, FL 32210, United States');
+
+  // The anchor path must reject CSS/style content too, not just the
+  // no-anchor generic path — same source-boundary fix, both call sites.
+  const t7 = '<html><head><style>.x{box-shadow: 0 1px 0 rgba(0, 0, 0, .15);}</style></head><body>no script here</body></html>';
+  check('anchor search also never returns CSS when no <script> tag exists',
+    detailParser.extractFullAddressByAnchor(t7, '0 1px 0') === '', detailParser.extractFullAddressByAnchor(t7, '0 1px 0'));
+
+  // A bare XHR body (no HTML wrapper, no <script> tags at all) must still
+  // work — the fallback-to-whole-text path, explicitly required to survive.
+  const bareXhr = ")]}'\n" + JSON.stringify(['2105 E Mariposa Rd, Stockton, CA 95205, United States']);
+  check('bare XHR body with no HTML wrapper at all still resolves via generic',
+    detailParser.extractFullAddressGeneric(bareXhr) === '2105 E Mariposa Rd, Stockton, CA 95205, United States');
+  check('bare XHR body with no HTML wrapper at all still resolves via anchor',
+    detailParser.extractFullAddressByAnchor(bareXhr, '2105 E Mariposa Rd') === '2105 E Mariposa Rd, Stockton, CA 95205, United States');
+
+  // extractAddress() (place-detail.js, DOM-based) must be completely
+  // unaffected by this change — it was never touched.
+  const { El } = await import('./harness/mini-dom.mjs');
+  const panel = new El('div', { role: 'main' });
+  panel.append(new El('button', { 'data-item-id': 'address' }).append('2105 E Mariposa Rd'));
+  const addrResult = placeDetail.extractAddress(panel);
+  check('extractAddress() (DOM-based, unrelated to this fix) still works unchanged',
+    addrResult.value === '2105 E Mariposa Rd' && addrResult.via === 'dom:data-item-id=address[text]',
+    JSON.stringify(addrResult));
+
+  // End-to-end through the full pipeline: CSS + real address together must
+  // resolve to ONLY the real address, in both Address and Full Address.
+  const e2eHtml = `<html><head><style>.x{box-shadow: 0 1px 0 rgba(0, 0, 0, .15);}</style></head><body>
+  <script>var boot = )]}'["2105 E Mariposa Rd, Stockton, CA 95205, United States"]</script>
+  </body></html>`;
+  const e2eBlank = { businessName: '', category: '', rating: '', reviewCount: '', address: '', fullAddress: '',
+    city: '', state: '', postalCode: '', country: '', website: '', phone: '', latitude: '', longitude: '', via: {} };
+  const e2eMerged = placeDetail.mergeEmbeddedPayload(e2eBlank, e2eHtml, '2105 E Mariposa Rd');
+  check('end-to-end: CSS alongside a real address resolves to the real address only, never CSS, in either field',
+    e2eMerged.fullAddress === '2105 E Mariposa Rd, Stockton, CA 95205, United States'
+    && !e2eMerged.address.includes('rgba') && !e2eMerged.fullAddress.includes('rgba'),
+    JSON.stringify(e2eMerged));
+}
+
+/* ================================================================== */
 group('Website/phone read directly off the results card — no tab, no fetch');
 
 {

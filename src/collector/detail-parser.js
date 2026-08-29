@@ -382,17 +382,52 @@ function normalizeForAddressSearch(text) {
 }
 
 /**
+ * Confine raw-text address search to where Google's actual data lives.
+ *
+ * `extractFullAddressByAnchor()`/`extractFullAddressGeneric()` below used to
+ * search the ENTIRE raw HTTP response — markup, `<style>` blocks, inline
+ * `style="..."` attributes, scripts, everything mixed together. A real
+ * report showed that produces garbage: `<style>.x{box-shadow: 0 1px 0
+ * rgba(0, 0, 0, .15)}</style>` is `digit, space, more text, comma, more
+ * text` — structurally indistinguishable from a street address to a regex,
+ * no matter how the *content* is validated afterward.
+ *
+ * The actual boundary that matters is WHERE Google's data lives, not what
+ * a candidate string looks like: `APP_INITIALIZATION_STATE` and any
+ * JSON-LD are always inside `<script>` tags; CSS is never in there. So
+ * strip `<style>` blocks and inline `style="..."` attributes first — a
+ * structural exclusion, not a content guess — then confine the search to
+ * `<script>` tag content when the response has any. A same-origin fetch of
+ * a place page can also come back as a bare XHR body with no HTML wrapper
+ * at all (no `<script>` tags anywhere); that text IS already just data, so
+ * it passes through unchanged rather than being discarded.
+ */
+function extractScriptText(html) {
+  const withoutStyle = String(html)
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/\sstyle\s*=\s*"[^"]*"/gi, ' ')
+    .replace(/\sstyle\s*=\s*'[^']*'/gi, ' ');
+
+  const scriptRe = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+  const parts = [];
+  let m;
+  while ((m = scriptRe.exec(withoutStyle)) !== null) parts.push(m[1]);
+  return parts.length ? parts.join('\n') : withoutStyle;
+}
+
+/**
  * Anchor-based Full Address recovery — ported from the mechanism a prior
  * working version of this extension used for exactly this problem. Rather
  * than guess at Google's undocumented internal JSON array layout (which
  * shifts between versions and silently breaks — the root cause chased
- * through 4.5.0-4.5.4), search the RAW response text for the street address
- * already trusted (from the card, the DOM, or this same payload) and read
- * forward to wherever that address text ends in the response. Google embeds
- * the complete formatted address as plain text somewhere in the page even
- * when it never lands in any `formattedAddress`-shaped structure at an
- * index this parser knows about, because the same text has to render for a
- * human either way.
+ * through 4.5.0-4.5.4), search the response text (restricted to
+ * `<script>` content — see extractScriptText() above) for the street
+ * address already trusted (from the card, the DOM, or this same payload)
+ * and read forward to wherever that address text ends. Google embeds the
+ * complete formatted address as plain text somewhere in its script data
+ * even when it never lands in any `formattedAddress`-shaped structure at
+ * an index this parser knows about, because the same text has to render
+ * for a human either way.
  *
  * This only ever EXTENDS an address already trusted — it can never replace
  * a good street with something worse, and it makes no assumption about
@@ -410,7 +445,7 @@ export function extractFullAddressByAnchor(rawText, knownStreet) {
   // were known, when really no street was ever found at all.
   if (!V.isPlausibleAddressLine(street)) return '';
 
-  const text = normalizeForAddressSearch(rawText);
+  const text = normalizeForAddressSearch(extractScriptText(rawText));
   const normStreet = normalizeForAddressSearch(street);
   const idx = text.toLowerCase().indexOf(normStreet.toLowerCase());
   if (idx === -1) return '';
@@ -436,18 +471,20 @@ export function extractFullAddressByAnchor(rawText, knownStreet) {
  * Absolute last resort — no known street to anchor on at all. Phase-1 card
  * scraping should almost always have already supplied one (that's the
  * street this whole fallback chain anchors on above); this only matters in
- * the rare case it genuinely didn't. Scans the raw response text directly
- * for anything shaped like "123 Some St, City, ..." without needing a
- * pre-known street, bounded to a fixed number of candidates so a huge
- * minified response cannot spin the collector, and each candidate is
- * bounded by JSON-string-safe characters so a match can never bleed across
- * an embedded string's boundary. Validated with the same
- * `V.isPlausibleFullAddress` used everywhere else — no country/postal
+ * the rare case it genuinely didn't. Scans the response text (restricted
+ * to `<script>` content — see extractScriptText() above, which is what
+ * keeps CSS like `box-shadow: 0 1px 0 rgba(0, 0, 0, .15)` from ever being
+ * visible here at all) for anything shaped like "123 Some St, City, ..."
+ * without needing a pre-known street, bounded to a fixed number of
+ * candidates so a huge minified response cannot spin the collector, and
+ * each candidate is bounded by JSON-string-safe characters so a match can
+ * never bleed across an embedded string's boundary. Validated with the
+ * same `V.isPlausibleFullAddress` used everywhere else — no country/postal
  * format is assumed, and nothing is invented: a miss returns ''.
  */
 export function extractFullAddressGeneric(rawText) {
   if (!rawText || typeof rawText !== 'string') return '';
-  const text = normalizeForAddressSearch(rawText);
+  const text = normalizeForAddressSearch(extractScriptText(rawText));
   const re = /\d{1,6}[^"\\[\]{}]{2,60},[^"\\[\]{}]{2,140}/g;
   let m;
   let tries = 0;
