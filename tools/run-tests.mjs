@@ -443,6 +443,127 @@ group('Place detail — same-origin fetch, no tab (extraction logic)');
   check('mergeEmbeddedPayload finds a JSON-LD-only address (array payload absent) via the production path',
     mergeLdOnly.fullAddress === '789 Ld Only Rd, Ldville, LD 77777, United States', mergeLdOnly.fullAddress);
 
+  // --- extractFullAddressByAnchor: ported from a prior working version of
+  //     this extension. No array index, no components array, no JSON-LD —
+  //     just the street we already trust and the raw response text. Uses
+  //     the exact address from the user's own report. ---
+  const anchorHtml = ")]}'\n" + JSON.stringify({
+    someField: 'irrelevant',
+    nested: { addr: '2105 E Mariposa Rd, Stockton, CA 95205, United States', other: 'x' },
+  });
+  check('extractFullAddressByAnchor finds the full address anchored on the known street',
+    detailParser.extractFullAddressByAnchor(anchorHtml, '2105 E Mariposa Rd')
+      === '2105 E Mariposa Rd, Stockton, CA 95205, United States',
+    detailParser.extractFullAddressByAnchor(anchorHtml, '2105 E Mariposa Rd'));
+
+  // Unicode-escaped exactly the way Google's raw JSON payload does it.
+  const escapedHtml = ")]}'\n" + JSON.stringify({
+    addr: '2105 E Mariposa Rd, Stockton, CA 95205, United States'.replace(/'/g, "\\u0027"),
+  }).replace(/Stockton/, 'Stockton\\u2019s'); // stray unicode punctuation nearby, must not break the match
+  check('extractFullAddressByAnchor tolerates unicode-escaped text around the match',
+    detailParser.extractFullAddressByAnchor(escapedHtml, '2105 E Mariposa Rd').startsWith('2105 E Mariposa Rd'),
+    detailParser.extractFullAddressByAnchor(escapedHtml, '2105 E Mariposa Rd'));
+
+  check('extractFullAddressByAnchor returns blank when the street never appears in the response',
+    detailParser.extractFullAddressByAnchor(anchorHtml, '999 Nowhere Ave') === '');
+  check('extractFullAddressByAnchor never anchors on a bare locality name (not a real street)',
+    detailParser.extractFullAddressByAnchor(anchorHtml, 'Stockton') === '');
+  check('extractFullAddressByAnchor stops at a JSON string boundary, never bleeding into unrelated data',
+    !detailParser.extractFullAddressByAnchor(
+      ")]}'\n" + JSON.stringify({ addr: '55 Bleed St', junk: 'Somewhere, ZZ 00000' }),
+      '55 Bleed St',
+    ).includes('Somewhere'));
+  check('extractFullAddressByAnchor returns blank for empty/garbage input rather than throwing',
+    detailParser.extractFullAddressByAnchor('', '55 Bleed St') === ''
+    && detailParser.extractFullAddressByAnchor(null, '55 Bleed St') === ''
+    && detailParser.extractFullAddressByAnchor(anchorHtml, '') === '');
+
+  // --- the anchor reaches production through mergeEmbeddedPayload(), using
+  //     the CALLER-SUPPLIED known street (the card's own Address — the most
+  //     trusted source, per the explicit requirement that Address extracted
+  //     at collection time must anchor the Full Address fallback) even when
+  //     this fetch's own DOM/payload extraction found no street at all. ---
+  const anchorOnlyHtml = ")]}'\n" + JSON.stringify({
+    unrelated: [1, 2, 3],
+    blob: 'business info: 2105 E Mariposa Rd, Stockton, CA 95205, United States',
+  });
+  const anchorMerged = placeDetail.mergeEmbeddedPayload(blank, anchorOnlyHtml, '2105 E Mariposa Rd');
+  check('mergeEmbeddedPayload recovers Full Address via the anchor using the card-supplied known street',
+    anchorMerged.fullAddress === '2105 E Mariposa Rd, Stockton, CA 95205, United States', anchorMerged.fullAddress);
+  check('the anchor also backfills the short Address field when the DOM found none',
+    anchorMerged.address === '2105 E Mariposa Rd', anchorMerged.address);
+  check('via correctly attributes the anchor as the source',
+    anchorMerged.via.fullAddress === 'payload:anchor', anchorMerged.via.fullAddress);
+
+  // --- end to end: fetchPlaceDetail() threads opts.knownStreet through to
+  //     the anchor, exactly as detail-resolver.js now passes record.address. ---
+  {
+    const priorDomParserAnchor = globalThis.DOMParser;
+    const priorFetchAnchor = globalThis.fetch;
+    globalThis.DOMParser = class {
+      parseFromString() {
+        // A minimal document with nothing address-related — forces
+        // fetchPlaceDetail() to rely entirely on the anchor.
+        return { querySelector: () => null, querySelectorAll: () => [] };
+      }
+    };
+    globalThis.fetch = async () => ({ ok: true, status: 200, url: 'https://www.google.com/maps/place/Anchor+Test', text: async () => anchorOnlyHtml });
+    const anchorFetched = await placeDetail.fetchPlaceDetail('https://www.google.com/maps/place/Anchor+Test', { timeoutMs: 500, knownStreet: '2105 E Mariposa Rd' });
+    check('fetchPlaceDetail resolves Full Address end to end via opts.knownStreet',
+      anchorFetched.ok === true && anchorFetched.data.fullAddress === '2105 E Mariposa Rd, Stockton, CA 95205, United States',
+      JSON.stringify(anchorFetched));
+    globalThis.DOMParser = priorDomParserAnchor;
+    globalThis.fetch = priorFetchAnchor;
+  }
+
+  // --- extractFullAddressGeneric: the absolute last resort when there is
+  //     no known street at all to anchor on. ---
+  check('extractFullAddressGeneric finds an address-shaped string with no known street at all',
+    detailParser.extractFullAddressGeneric(")]}'\n" + JSON.stringify({ blob: '78 Ocean View Ter, Santa Cruz, CA 95060, United States' }))
+      === '78 Ocean View Ter, Santa Cruz, CA 95060, United States');
+  check('extractFullAddressGeneric returns blank when nothing address-shaped exists',
+    detailParser.extractFullAddressGeneric(")]}'\n" + JSON.stringify({ blob: 'no address here, just words' })) === '');
+  check('extractFullAddressGeneric returns blank for empty/garbage input rather than throwing',
+    detailParser.extractFullAddressGeneric('') === '' && detailParser.extractFullAddressGeneric(null) === '');
+
+  // --- international addresses: the anchor/generic fallbacks must not be
+  //     US-only. UK, Canada and Australia shapes, none of which have a
+  //     5-digit US ZIP, all the way through mergeEmbeddedPayload(). ---
+  const ukJson6 = new Array(200).fill(null);
+  ukJson6[2] = ['221B Baker Street', 'London', 'NW1 6XE', 'United Kingdom'];
+  const ukJsonFull = new Array(7); ukJsonFull[6] = ukJson6;
+  const ukMerged = placeDetail.mergeEmbeddedPayload(blank, ")]}'\n" + JSON.stringify(ukJsonFull), '221B Baker Street');
+  check('a UK address (no US ZIP shape) resolves correctly through the full pipeline',
+    ukMerged.fullAddress === '221B Baker Street, London, NW1 6XE, United Kingdom', ukMerged.fullAddress);
+
+  const caJson6 = new Array(200).fill(null);
+  caJson6[2] = ['123 Main St', 'Toronto', 'ON M5H 2N2', 'Canada'];
+  const caJsonFull = new Array(7); caJsonFull[6] = caJson6;
+  const caMerged = placeDetail.mergeEmbeddedPayload(blank, ")]}'\n" + JSON.stringify(caJsonFull), '123 Main St');
+  check('a Canadian address (letter-digit postal code) resolves correctly',
+    caMerged.fullAddress === '123 Main St, Toronto, ON M5H 2N2, Canada', caMerged.fullAddress);
+
+  // --- suite/unit numbers must survive the full pipeline unmangled. ---
+  const suiteHtml = `<html><body><script>
+    var blob = "9606 Tierra Grande St Ste 202, San Diego, CA 92126, United States";
+  </script></body></html>`;
+  const suiteMerged = placeDetail.mergeEmbeddedPayload(blank, suiteHtml, '9606 Tierra Grande St Ste 202');
+  check('a suite/unit number in the street survives the anchor fallback intact',
+    suiteMerged.fullAddress === '9606 Tierra Grande St Ste 202, San Diego, CA 92126, United States', suiteMerged.fullAddress);
+
+  // --- genuinely nothing exposed anywhere: must resolve Not Found, never
+  //     invent city/state/zip/country. ---
+  const nothingJson6 = new Array(200).fill(null);
+  nothingJson6[7] = ['https://noaddress.example.com'];
+  const nothingJsonFull = new Array(7); nothingJsonFull[6] = nothingJson6;
+  const nothingMerged = placeDetail.mergeEmbeddedPayload(blank, ")]}'\n" + JSON.stringify(nothingJsonFull), '');
+  check('when nothing is exposed anywhere, Full Address stays genuinely blank rather than inventing one',
+    nothingMerged.fullAddress === '' && !nothingMerged.city && !nothingMerged.state
+      && !nothingMerged.postalCode && !nothingMerged.country,
+    JSON.stringify(nothingMerged));
+  check('website is still found even when address is genuinely absent (fields are independent)',
+    nothingMerged.website === 'https://noaddress.example.com', nothingMerged.website);
+
   // --- when BOTH the array payload and JSON-LD are absent, parsePlaceDetail
   //     still returns a well-formed blank object, not a crash. ---
   const nothingAtAll = detailParser.parsePlaceDetail('<html><body>totally empty page</body></html>');

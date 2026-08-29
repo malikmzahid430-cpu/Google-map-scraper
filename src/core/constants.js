@@ -4,7 +4,7 @@
  */
 
 export const APP_NAME = 'Al-Aqsa Scraper';
-export const APP_VERSION = '4.5.4';
+export const APP_VERSION = '4.6.0';
 
 /* ------------------------------------------------------------------ *
  * Storage keys. Records are sharded per job so a big job never has to

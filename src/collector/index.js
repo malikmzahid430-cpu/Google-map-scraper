@@ -83,6 +83,7 @@ const handlers = {
     if (!url) return fail('No place URL supplied.');
     const result = await fetchPlaceDetail(url, {
       timeoutMs: (payload && payload.timeoutMs) || 12000,
+      knownStreet: (payload && payload.knownStreet) || '',
     });
     return result.ok ? ok(result.data) : fail(result.error);
   },

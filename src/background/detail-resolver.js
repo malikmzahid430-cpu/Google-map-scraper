@@ -101,7 +101,11 @@ async function resolveOne(tabId, record, settings) {
   try {
     res = await chrome.tabs.sendMessage(tabId, {
       type: MSG.DETAIL_EXTRACT,
-      payload: { url: record.mapsUrl, timeoutMs: timeout },
+      // The card's own Address (record.address), already trusted, gives
+      // the content script's anchor-based Full Address fallback something
+      // to search for even when this one fetch's own DOM/payload
+      // extraction finds no street of its own.
+      payload: { url: record.mapsUrl, timeoutMs: timeout, knownStreet: record.address || '' },
     });
   } catch (err) {
     return { status: 'failed', detail: null, error: `content script unreachable: ${err && err.message}` };

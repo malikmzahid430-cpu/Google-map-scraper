@@ -272,8 +272,10 @@ export function extractFromDocument(root, url) {
  * payload — a last resort, used only for what's still missing, and every
  * value is validated before use exactly like the DOM path.
  */
-export function mergeEmbeddedPayload(detail, html) {
+export function mergeEmbeddedPayload(detail, html, knownStreet) {
   if (!html || (detail.fullAddress && detail.website && detail.phone)) return detail;
+
+  const out = { ...detail, via: { ...detail.via } };
 
   let payload = null;
   try {
@@ -281,14 +283,22 @@ export function mergeEmbeddedPayload(detail, html) {
     // first. parsePlaceDetail() handles a missing array payload internally
     // and still tries JSON-LD, an independent address source; a pre-check
     // here that skipped calling it entirely would make that fallback dead
-    // code in the one situation it exists for.
-    payload = parsePayload(html);
+    // code in the one situation it exists for. The DOM's own street
+    // (out.address) is offered first, falling back to the caller's
+    // already-trusted street (e.g. the card's own Address from Phase-1
+    // collection) — parsePlaceDetail's own anchor-based fallback uses
+    // whichever is available to recover a Full Address even when neither
+    // the array payload nor JSON-LD produced one structurally.
+    payload = parsePayload(html, { knownStreet: out.address || knownStreet });
   } catch { /* a malformed response must not break this record */ }
-  if (!payload || !payload.ok) return detail;
 
-  const out = { ...detail, via: { ...detail.via } };
+  // Everything below that reads `payload.*` needs payload.ok — but the
+  // anchor-based fallback further down does NOT (it works directly off the
+  // raw response text), so a missing/unparseable payload must not skip past
+  // it via an early return the way it used to.
+  const hasPayload = !!(payload && payload.ok);
 
-  if (!out.fullAddress && payload.fullAddress && isCompleteAddress(payload.fullAddress)) {
+  if (hasPayload && !out.fullAddress && payload.fullAddress && isCompleteAddress(payload.fullAddress)) {
     out.fullAddress = tidyAddress(payload.fullAddress);
     const c = splitAddress(out.fullAddress);
     out.city = out.city || c.city;
@@ -301,7 +311,7 @@ export function mergeEmbeddedPayload(detail, html) {
     // street component belongs in the short Address field too, not just
     // buried inside Full Address.
     if (!out.address && (c.street || payload.address)) out.address = c.street || payload.address;
-  } else if (!out.fullAddress && (out.address || payload.address) && (payload.city || payload.postalCode)) {
+  } else if (hasPayload && !out.fullAddress && (out.address || payload.address) && (payload.city || payload.postalCode)) {
     // Neither source alone produced a complete address. The DOM path
     // (extractAddress) reads `data-item-id="address"` markup that a raw,
     // non-JS-executed fetch() response frequently does not contain at all —
@@ -330,15 +340,26 @@ export function mergeEmbeddedPayload(detail, html) {
         : 'payload:composed-from-dom-street';
     }
   }
-  if (!out.website && V.isPlausibleWebsite(payload.website)) {
-    out.website = payload.website;
-    out.via.website = `payload:${payload.via.website}`;
+
+  // Anchor/generic recovery (a prior working version of this extension's
+  // mechanism — see extractFullAddressByAnchor()/extractFullAddressGeneric()
+  // in detail-parser.js) already ran INSIDE parsePayload() above, seeded
+  // with the best street available (out.address || knownStreet). If it
+  // found something, payload.fullAddress already carries the result and
+  // the branches above already picked it up — no separate branch needed
+  // here, so there is exactly one implementation of this logic, not two.
+
+  if (hasPayload) {
+    if (!out.website && V.isPlausibleWebsite(payload.website)) {
+      out.website = payload.website;
+      out.via.website = `payload:${payload.via.website}`;
+    }
+    if (!out.phone && V.isPlausiblePhone(payload.phone)) {
+      out.phone = payload.phone;
+      out.via.phone = `payload:${payload.via.phone}`;
+    }
+    if (!out.latitude && payload.latitude) { out.latitude = payload.latitude; out.longitude = payload.longitude; }
   }
-  if (!out.phone && V.isPlausiblePhone(payload.phone)) {
-    out.phone = payload.phone;
-    out.via.phone = `payload:${payload.via.phone}`;
-  }
-  if (!out.latitude && payload.latitude) { out.latitude = payload.latitude; out.longitude = payload.longitude; }
 
   return out;
 }
@@ -412,7 +433,12 @@ export async function fetchPlaceDetail(mapsUrl, opts = {}) {
     parsed = { businessName: '', category: '', rating: '', reviewCount: '', address: '', fullAddress: '', city: '', state: '', postalCode: '', country: '', website: '', phone: '', latitude: '', longitude: '', via: { parseError: String(err && err.message) } };
   }
 
-  const merged = mergeEmbeddedPayload(parsed, res.text);
+  // The card's already-known street (opts.knownStreet, threaded through
+  // from detail-resolver.js -> the DETAIL_EXTRACT message) is the most
+  // trusted address source available — it's what a human sees in the
+  // results list — so it's offered to the anchor-based fallback even when
+  // this fetch's own DOM/payload extraction found no street of its own.
+  const merged = mergeEmbeddedPayload(parsed, res.text, opts.knownStreet);
   return { ok: true, data: withStatuses(merged), error: null };
 }
 
@@ -451,7 +477,7 @@ export async function diagnosePlaceDetail(mapsUrl, opts = {}) {
   let payloadFound = false;
   try { payloadFound = !!extractPlaceJson(res.text); } catch { /* treated as not found */ }
 
-  const merged = mergeEmbeddedPayload(parsed, res.text);
+  const merged = mergeEmbeddedPayload(parsed, res.text, opts.knownStreet);
 
   // Strip script/style bodies so a diagnostics report a user pastes
   // somewhere never carries anything large or executable — just enough

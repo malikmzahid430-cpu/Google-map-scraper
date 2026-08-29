@@ -1,5 +1,97 @@
 # Changelog
 
+## 4.6.0 — Full Address: anchor-based recovery, ported from a prior working version
+
+Scope: `src/collector/detail-parser.js`, `src/collector/place-detail.js`,
+`src/collector/index.js`, `src/background/detail-resolver.js`,
+`tools/run-tests.mjs`.
+
+### Why 4.5.0-4.5.4 still weren't enough
+Every fix through 4.5.4 made the STRUCTURED extraction paths (Google's
+internal JSON array layout, JSON-LD) more robust, and they were real,
+verified fixes. But all of them shared one blind spot: they only ever find
+an address that Google exposes in a recognisable STRUCTURE — a specific
+array index, a `PostalAddress` object, a DOM element. When a specific
+account's response puts the address somewhere none of those structures
+recognise, none of them can find it, no matter how many structural fallbacks
+are stacked on top of each other.
+
+Digging through this project's own history surfaced the actual answer: a
+prior working version of this extension solved exactly this problem, and
+not by parsing structure at all — by anchoring on the street address already
+trusted (from the card) and searching the RAW response text for how it
+continues. That mechanism is what's ported and adapted here.
+
+### Added — extractFullAddressByAnchor() and extractFullAddressGeneric()
+`src/collector/detail-parser.js`:
+- `extractFullAddressByAnchor(rawText, knownStreet)` — normalises unicode
+  escapes/entities Google's raw response wraps text in, finds the known
+  street as plain text in the response, and reads forward to wherever that
+  address text ends (the next JSON string/array/object boundary). Rejects a
+  "known street" that isn't itself street-shaped (a bare city name can never
+  be used as an anchor). Validated with the same `V.isPlausibleFullAddress`
+  used throughout this codebase — international-agnostic, no US-only ZIP
+  assumption.
+- `extractFullAddressGeneric(rawText)` — absolute last resort when there is
+  no known street to anchor on at all: scans the raw text directly for
+  anything address-shaped, bounded to 500 candidates so a huge response
+  cannot spin the collector, each candidate bounded by JSON-string-safe
+  characters so a match can never bleed across a string boundary.
+
+Both are tried only after every structural attempt (array-index resolution,
+JSON-LD, locality-fragment scan) has already failed, and both only ever
+EXTEND a street already trusted — neither can replace a good value with
+something worse, and neither invents a country/state/postal code that
+wasn't actually found in the response.
+
+### Changed — the card's Address now anchors detail resolution
+`record.address` (the street already confirmed correct at Phase-1 card
+collection) is threaded through end to end: `detail-resolver.js` includes it
+in the `DETAIL_EXTRACT` message it already sends the content script ->
+`index.js` passes it to `fetchPlaceDetail()` -> `place-detail.js` passes it
+to `parsePlaceDetail()` as `opts.knownStreet`, alongside the array-payload's
+own internally-resolved street (tried first, since it's guaranteed to be
+Google's own text for that exact record). This is the single most useful
+anchor available, since it's what a human already sees in the results list.
+
+`mergeEmbeddedPayload()` no longer duplicates this fallback chain — it seeds
+`parsePlaceDetail()` with the best street it has (the DOM's own, falling
+back to the caller's known street) and lets that one authoritative
+implementation do the recovery, rather than running two separate copies of
+similar logic that could drift out of sync.
+
+### Tested — 20 businesses, real browser, real production code
+This sandbox's network policy blocks outbound access to `google.com`
+entirely (confirmed directly against the egress proxy: a 403 on the CONNECT
+itself), so a live fetch against Google Maps is not possible from here. What
+was tested instead: 20 realistic synthetic place-page responses — modeling
+the actual response shapes this code has to handle (a genuine
+`addressComponents` array, a bare street with a separate locality fragment
+[the exact reported bug], JSON-LD only, raw-text-only with and without a
+known street, UK/Canada/Australia address formats, suite/unit numbers, no
+website, no phone, and a case with genuinely no address anywhere) — run
+through the unmodified production code (`place-detail.js`/
+`detail-parser.js`) in an actual Chromium browser's real `fetch()`/
+`DOMParser`, via network interception standing in for Google's response.
+
+Result: **20/20 complete and correct**, 0 incomplete, 0 missing, 0 incorrect,
+0 technical errors — including the case with no address anywhere correctly
+resolving to blank/Not Found rather than inventing one, and the international
+addresses resolving with no US-ZIP assumption anywhere in the fix.
+
+Also verified: the packaged extension loads unpacked into a real Chromium
+with a clean manifest, a service worker that starts without error, and a
+side panel that renders with zero console errors. `chrome.tabs.create` is
+grepped across the whole codebase and appears in exactly two places, neither
+of them detail resolution: opening the exported Google Sheet after export,
+and starting the next queued SEARCH job (a whole new query) when no Maps tab
+is already open — never once per business record. **Individual business
+tabs opened: 0.**
+
+320/320 tests pass (12 new, covering the anchor/generic functions directly,
+the international/suite/not-found cases, and the end-to-end
+`fetchPlaceDetail()` path). Isolation and build verification clean.
+
 ## 4.5.4 — verified 4.5.3 live in a real browser; found and fixed one more gap
 
 Scope: `src/collector/place-detail.js`, `tools/run-tests.mjs`.

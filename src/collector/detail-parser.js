@@ -358,6 +358,101 @@ export function extractStreetLine(fullAddress, components) {
   return '';
 }
 
+/**
+ * Undo the escaping a raw JSON/HTML response wraps address text in, so a
+ * plain-text search for it actually matches. Ported from a prior working
+ * version of this extension's anchor-based address recovery below.
+ */
+function normalizeForAddressSearch(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/\\\//g, '/')
+    .replace(/&#39;|&#x27;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/[\u00A0\u2007\u202F]/g, ' ')
+    .replace(/[\u2010-\u2015]/g, '-');
+}
+
+/**
+ * Anchor-based Full Address recovery — ported from the mechanism a prior
+ * working version of this extension used for exactly this problem. Rather
+ * than guess at Google's undocumented internal JSON array layout (which
+ * shifts between versions and silently breaks — the root cause chased
+ * through 4.5.0-4.5.4), search the RAW response text for the street address
+ * already trusted (from the card, the DOM, or this same payload) and read
+ * forward to wherever that address text ends in the response. Google embeds
+ * the complete formatted address as plain text somewhere in the page even
+ * when it never lands in any `formattedAddress`-shaped structure at an
+ * index this parser knows about, because the same text has to render for a
+ * human either way.
+ *
+ * This only ever EXTENDS an address already trusted — it can never replace
+ * a good street with something worse, and it makes no assumption about
+ * country/postal format (the candidate is validated with the same
+ * `V.isPlausibleFullAddress` used everywhere else in this file, which is
+ * international-agnostic: it requires 2+ comma-separated parts of plausible
+ * length, not a specific ZIP/postcode shape).
+ */
+export function extractFullAddressByAnchor(rawText, knownStreet) {
+  if (!rawText || typeof rawText !== 'string') return '';
+  const street = String(knownStreet || '').trim();
+  // Must itself look like a genuine street (a digit, or a street word) —
+  // never a bare city/locality name mistaken for one. Anchoring on "Austin"
+  // would happily "confirm" any nearby "Austin, TX 78701" as if the street
+  // were known, when really no street was ever found at all.
+  if (!V.isPlausibleAddressLine(street)) return '';
+
+  const text = normalizeForAddressSearch(rawText);
+  const normStreet = normalizeForAddressSearch(street);
+  const idx = text.toLowerCase().indexOf(normStreet.toLowerCase());
+  if (idx === -1) return '';
+
+  // Whatever follows the street, up to the next JSON string/array/object
+  // boundary — i.e. the rest of the same embedded string, which is where
+  // Google keeps the rest of a formatted address when the street is a
+  // prefix of it.
+  const afterStart = idx + normStreet.length;
+  const after = text.slice(afterStart, afterStart + 220);
+  const boundary = after.search(/["\\[\]{}]/);
+  const tail = boundary === -1 ? after : after.slice(0, boundary);
+
+  const candidate = (text.slice(idx, afterStart) + tail)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[,\s]+$/, '');
+
+  return V.isPlausibleFullAddress(candidate) ? candidate : '';
+}
+
+/**
+ * Absolute last resort — no known street to anchor on at all. Phase-1 card
+ * scraping should almost always have already supplied one (that's the
+ * street this whole fallback chain anchors on above); this only matters in
+ * the rare case it genuinely didn't. Scans the raw response text directly
+ * for anything shaped like "123 Some St, City, ..." without needing a
+ * pre-known street, bounded to a fixed number of candidates so a huge
+ * minified response cannot spin the collector, and each candidate is
+ * bounded by JSON-string-safe characters so a match can never bleed across
+ * an embedded string's boundary. Validated with the same
+ * `V.isPlausibleFullAddress` used everywhere else — no country/postal
+ * format is assumed, and nothing is invented: a miss returns ''.
+ */
+export function extractFullAddressGeneric(rawText) {
+  if (!rawText || typeof rawText !== 'string') return '';
+  const text = normalizeForAddressSearch(rawText);
+  const re = /\d{1,6}[^"\\[\]{}]{2,60},[^"\\[\]{}]{2,140}/g;
+  let m;
+  let tries = 0;
+  while ((m = re.exec(text)) !== null && tries < 500) {
+    tries++;
+    const candidate = m[0].replace(/\s+/g, ' ').trim().replace(/[,\s]+$/, '');
+    if (V.isPlausibleFullAddress(candidate)) return candidate;
+  }
+  return '';
+}
+
 /* ==================================================================== *
  * 5. Top-level parse
  * ==================================================================== */
@@ -366,7 +461,7 @@ export function extractStreetLine(fullAddress, components) {
  * Parse a place page's HTML into detail fields.
  * Always returns an object; unresolved fields are '' and reported in `via`.
  */
-export function parsePlaceDetail(html) {
+export function parsePlaceDetail(html, opts = {}) {
   const out = {
     address: '', fullAddress: '', website: '', phone: '',
     city: '', state: '', postalCode: '', country: '',
@@ -494,6 +589,47 @@ export function parsePlaceDetail(html) {
   out.address = extractStreetLine('', components)
     || (formattedValue ? String(formattedValue).split(',')[0].trim() : '')
     || extractStreetLine(out.fullAddress, components);
+
+  // Last resort, tried only when nothing above produced a complete Full
+  // Address: anchor on a street we trust and search the raw response text
+  // for how it continues. See extractFullAddressByAnchor() above. Two
+  // candidates, in order: the street resolved from THIS SAME payload above
+  // (guaranteed to be Google's own text for this exact record), then
+  // `opts.knownStreet` — the caller's already-trusted street (e.g. the
+  // card's own Address from Phase-1 collection, threaded through by
+  // place-detail.js), tried only if the first found nothing to anchor on.
+  if (!out.fullAddress) {
+    for (const candidate of [out.address, opts.knownStreet]) {
+      if (!candidate) continue;
+      const anchored = extractFullAddressByAnchor(html, candidate);
+      if (!anchored) continue;
+      out.fullAddress = anchored;
+      out.address = out.address || String(candidate).trim();
+      const split = splitAddress(out.fullAddress);
+      out.city = split.city; out.state = split.state; out.postalCode = split.postalCode;
+      out.country = split.country || country || '';
+      formattedVia = 'anchor';
+      out.ok = true;
+      break;
+    }
+  }
+
+  // Absolute last resort — no street was found at all above to anchor on.
+  // See extractFullAddressGeneric() for why this is still safe: bounded and
+  // validated the same way as everything else.
+  if (!out.fullAddress) {
+    const generic = extractFullAddressGeneric(html);
+    if (generic) {
+      out.fullAddress = generic;
+      out.address = out.address || String(generic).split(',')[0].trim();
+      const split = splitAddress(out.fullAddress);
+      out.city = split.city; out.state = split.state; out.postalCode = split.postalCode;
+      out.country = split.country || country || '';
+      formattedVia = 'generic';
+      out.ok = true;
+    }
+  }
+
   out.via.fullAddress = out.fullAddress ? formattedVia : 'none';
   out.via.country = country ? 'found' : 'absent';
 
