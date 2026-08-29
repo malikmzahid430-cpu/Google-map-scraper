@@ -37,6 +37,7 @@ export function renderDiagnostics(state) {
   ${renderSheets(d.sheets)}
   ${renderSample(d.page)}
   ${renderDetailProbe(d.page)}
+  ${renderIframeProbe(state)}
 
   <div class="card tight">
     <button class="primary block" data-act="rerun">Run diagnostics again</button>
@@ -263,6 +264,55 @@ function renderDetailProbe(page) {
   </div>`;
 }
 
+/**
+ * TEMPORARY — proof-of-concept probe only. Tests whether a hidden,
+ * same-origin <iframe> (no new tab, no chrome.tabs.create) can render the
+ * real Google Maps place page and expose [data-item-id="address"] the way
+ * a live tab does — since fetch()+DOMParser structurally cannot (DOMParser
+ * never runs JavaScript, confirmed by a live View Source test finding no
+ * trace of that element in the raw response). This card and its wiring in
+ * app.js/router.js/collector/iframe-probe.js are meant to be removed once
+ * the question is answered either way.
+ */
+function renderIframeProbe(state) {
+  const sample = state.diagnostics && state.diagnostics.page && state.diagnostics.page.sample;
+  const url = sample && sample.mapsUrl;
+  const probe = state.iframeProbe;
+
+  return `
+  <div class="card">
+    <h2>Iframe DOM probe <span class="count">temporary test</span></h2>
+    <p class="hint tiny">Proof of concept only — tests whether a hidden same-origin iframe can render Google Maps and expose <code>[data-item-id="address"]</code>, without opening any browser tab. Not wired into collection or detail resolution.</p>
+    <button class="block" data-act="run-iframe-probe" ${url ? '' : 'disabled'} style="margin-top:8px">
+      ${probe && probe.loading ? 'Running…' : 'Run iframe DOM probe'}
+    </button>
+    ${!url ? '<p class="hint tiny" style="margin-top:6px">Run diagnostics first so a sample business URL is available.</p>' : ''}
+    ${probe && !probe.loading ? renderIframeProbeResult(probe, url) : ''}
+  </div>`;
+}
+
+function renderIframeProbeResult(probe, url) {
+  if (probe.error) {
+    return `${banner('error', `<strong>Could not run the probe.</strong><br><span class="hint tiny">${esc(probe.error)}</span>`)}`;
+  }
+
+  const rows = [
+    ['URL', 'info', probe.url || url || ''],
+    ['Iframe created', probe.iframeCreated ? 'ok' : 'degraded', probe.iframeCreated ? 'YES' : 'NO'],
+    ['Iframe loaded', probe.iframeLoaded ? 'ok' : 'degraded', probe.iframeLoaded ? 'YES' : 'NO'],
+    ['[data-item-id="address"] found', probe.elementFound ? 'ok' : 'degraded', probe.elementFound ? 'YES' : 'NO'],
+    ['Address extracted', probe.address ? 'ok' : 'degraded', probe.address || '(blank)'],
+    ['Full Address extracted', probe.fullAddress ? 'ok' : 'degraded', probe.fullAddress || '(blank)'],
+    ['Time taken', 'info', `${probe.seconds ?? '?'} seconds`],
+    ['Result', probe.result === 'SUCCESS' ? 'ok' : 'degraded', probe.result || 'UNKNOWN'],
+  ];
+
+  return `
+  <div class="divider"></div>
+  ${rows.map(row).join('')}
+  ${probe.reason ? `<p class="hint tiny" style="margin-top:8px"><strong>Reason:</strong> ${esc(probe.reason)}</p>` : ''}`;
+}
+
 /* ------------------------------- helper ------------------------------ */
 
 function row([name, kind, msg]) {
@@ -287,5 +337,9 @@ export function bindDiagnostics() {
   onClick(root, '[data-act="back-to-settings"]', async () => {
     const app = await import('../app.js');
     app.switchView('settings');
+  });
+  onClick(root, '[data-act="run-iframe-probe"]', async () => {
+    const app = await import('../app.js');
+    await app.runIframeProbe();
   });
 }

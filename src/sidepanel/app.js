@@ -49,6 +49,8 @@ export const state = {
   sort: { key: 'serial', dir: 'asc' },
   sheets: { configured: false, signedIn: false },
   diagnostics: null,
+  /** TEMPORARY — proof-of-concept iframe DOM probe result, see diagnostics.js. */
+  iframeProbe: null,
   busy: false,
   now: Date.now(),
 
@@ -231,6 +233,26 @@ export async function setScope(scope, jobIds = []) {
 export async function runDiagnostics() {
   const res = await send(MSG.DIAG_RUN);
   state.diagnostics = res.ok ? res.data : { error: res.error };
+  paint();
+}
+
+/**
+ * TEMPORARY — proof-of-concept only. Runs the hidden-iframe DOM probe
+ * (src/collector/iframe-probe.js) against the sample business Diagnostics
+ * already found, so this never needs its own URL input.
+ */
+export async function runIframeProbe() {
+  const sample = state.diagnostics && state.diagnostics.page && state.diagnostics.page.sample;
+  const url = sample && sample.mapsUrl;
+  if (!url) {
+    state.iframeProbe = { error: 'Run diagnostics first so a sample business URL is available.' };
+    paint();
+    return;
+  }
+  state.iframeProbe = { loading: true };
+  paint();
+  const res = await send(MSG.DIAG_IFRAME_PROBE, { url });
+  state.iframeProbe = res.ok ? res.data : { error: res.error };
   paint();
 }
 

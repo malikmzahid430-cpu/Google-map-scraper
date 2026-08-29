@@ -62,6 +62,8 @@ export const MSG = {
 
   DIAG_RUN: 'diag:run',
   DIAG_PAGE_PROBE: 'diag:pageProbe',
+  // TEMPORARY — proof-of-concept only, not part of the production resolver.
+  DIAG_IFRAME_PROBE: 'diag:iframeProbe',
 
   // Home screen: "is there already a Google Maps search open?"
   MAPS_DETECT: 'maps:detect',

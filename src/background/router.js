@@ -836,6 +836,22 @@ async function handleDiagRun() {
   return ok(report);
 }
 
+/**
+ * TEMPORARY diagnostic probe — proof of concept only, see
+ * src/collector/iframe-probe.js. Relays to whichever Maps tab is already
+ * open; opens no tab of its own.
+ */
+async function handleDiagIframeProbe(payload) {
+  const url = payload && payload.url;
+  if (!url) return fail('No place URL supplied.');
+
+  const tab = await findMapsTab();
+  if (!tab) return fail('No Google Maps tab is open.');
+
+  const res = await sendToTab(tab.id, MSG.DIAG_IFRAME_PROBE, { url, timeoutMs: (payload && payload.timeoutMs) || 10000 });
+  return res.ok ? ok(res.data) : fail(res.error);
+}
+
 /* ==================================================================== *
  * Handler table
  * ==================================================================== */
@@ -891,6 +907,7 @@ export const handlers = {
   [MSG.QUEUE_STOP]: handleQueueStop,
 
   [MSG.DIAG_RUN]: handleDiagRun,
+  [MSG.DIAG_IFRAME_PROBE]: handleDiagIframeProbe,
 
   [MSG.MAPS_DETECT]: handleMapsDetect,
 };

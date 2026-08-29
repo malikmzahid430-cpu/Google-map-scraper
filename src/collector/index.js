@@ -15,6 +15,7 @@ import * as dom from './dom.js';
 import * as S from './selectors.js';
 import { parseCard } from './card-parser.js';
 import { fetchPlaceDetail, diagnosePlaceDetail } from './place-detail.js';
+import { runIframeAddressProbe } from './iframe-probe.js';
 
 const log = createLogger('content');
 
@@ -86,6 +87,19 @@ const handlers = {
       knownStreet: (payload && payload.knownStreet) || '',
     });
     return result.ok ? ok(result.data) : fail(result.error);
+  },
+
+  /**
+   * TEMPORARY diagnostic probe — proof of concept only, see
+   * src/collector/iframe-probe.js. Not called anywhere in the production
+   * collect/detail-resolve path; only Diagnostics' opt-in test button
+   * triggers this.
+   */
+  [MSG.DIAG_IFRAME_PROBE]: async (payload) => {
+    const url = payload && payload.url;
+    if (!url) return fail('No place URL supplied.');
+    const result = await runIframeAddressProbe(url, { timeoutMs: (payload && payload.timeoutMs) || 10000 });
+    return ok(result);
   },
 
   [MSG.COLLECT_PAUSE]: () => ok(collector.pause()),
