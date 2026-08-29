@@ -18,6 +18,13 @@ export function isPlausibleWebsite(v) {
   if (!isString(v)) return false;
   const s = v.trim();
   if (s.length < 4 || s.length > 500) return false;
+  // A real URL/domain never legitimately contains a raw space or comma — the
+  // WHATWG URL constructor below silently percent-encodes them instead of
+  // rejecting the input, which is how a comma-and-space-joined garbage
+  // string (e.g. Google's own internal data) could pass as a "website"
+  // despite looking nothing like one.
+  if (/[\s,]/.test(s)) return false;
+  if (looksLikeGoogleInternalData(s)) return false;
 
   const lower = s.toLowerCase();
   if (BLOCKED_WEBSITE_SUBSTRINGS.some((frag) => lower.includes(frag))) return false;
@@ -74,7 +81,68 @@ export function hasIconGlyph(v) {
   return /[\uE000-\uF8FF]|[\u{F0000}-\u{FFFFD}]|[\u{100000}-\u{10FFFD}]/u.test(String(v || ''));
 }
 
-/** A street line: has some digits or a recognisable street word, and no @. */
+/**
+ * Substrings/patterns that only ever appear in Google's own internal
+ * JS/JSON — build labels, RPC parameters, batchexecute payloads — never in
+ * a human-written postal address. Found by tracing an actual reported bad
+ * value (`4oR0.2021.O/m=GfLzUe, tNOPW, cZ2KIb, ...`) back through
+ * structuralScan(): Google's APP_INITIALIZATION_STATE payload is enormous
+ * and full of exactly this kind of internal metadata string, and a scan
+ * that only checked "looks like 2+ comma-separated parts with a digit
+ * somewhere" had no way to tell that apart from a real address.
+ */
+const GOOGLE_INTERNAL_MARKERS = ['/m=', '/am=', '/rt=', '/rs=', 'wli=', 'batchexecute', 'boq_'];
+
+/** "4oR0.2021.O" — a short alphanumeric build/version label, dot-separated. */
+const VERSION_TOKEN_RE = /\b[a-zA-Z0-9]{1,6}\.\d{4}\.[a-zA-Z0-9]{1,4}\b/;
+
+/**
+ * "cZ2KIb", "Rq2f7d", "MJcXSb" — the distinctive shape of a Closure-
+ * compiler-obfuscated identifier: short, mixes upper case, lower case AND
+ * digits with no recognisable word or number pattern. A real address
+ * component (a city, a state code, a unit number) never looks like this.
+ */
+function looksLikeObfuscatedToken(part) {
+  return /^[A-Za-z][A-Za-z0-9]{3,9}$/.test(part)
+    && /\d/.test(part) && /[a-z]/.test(part) && /[A-Z]/.test(part);
+}
+
+/**
+ * Any of the concrete Google-internal signals found while debugging this.
+ * Exported because the same false positive hits more than just the address
+ * fields: a version-token like "4oR0.2021.O" has dots in it, which is
+ * exactly what makes a string LOOK like a domain name too — isPlausibleWebsite
+ * below was found accepting the very same reported garbage as a "website"
+ * for that reason, and detail-parser.js's own locality-fragment scan needs
+ * the same guard for the same underlying reason.
+ */
+export function looksLikeGoogleInternalData(v) {
+  const s = String(v || '');
+  const lower = s.toLowerCase();
+  if (GOOGLE_INTERNAL_MARKERS.some((m) => lower.includes(m))) return true;
+  if (VERSION_TOKEN_RE.test(s)) return true;
+  const parts = s.split(',').map((p) => p.trim()).filter(Boolean);
+  if (parts.filter(looksLikeObfuscatedToken).length >= 2) return true;
+  return false;
+}
+
+/**
+ * Does this look like an actual street segment — "2105 E Mariposa Rd",
+ * "6215-1 Wilson Blvd Building 1", "221B Baker Street", "PO Box 4402" —
+ * rather than an arbitrary string that merely contains a digit somewhere?
+ * A genuine street line has EITHER a leading house number followed by a
+ * space and more text, OR a recognisable street word with a space next to
+ * it. This is deliberately stricter than "has a digit" — that alone is
+ * what let Google's internal tokens through in the first place, since a
+ * build label or RPC parameter list very often contains digits too.
+ */
+function looksLikeGenuineStreetSegment(s) {
+  if (/^\d{1,6}[a-zA-Z]?(?:-\d+)?\s+\S/.test(s)) return true;
+  if (/\bp\.?\s*o\.?\s*box\b/i.test(s)) return true;
+  return /\s/.test(s) && /\b(st|street|rd|road|ave|avenue|blvd|boulevard|ln|lane|dr|drive|way|hwy|highway|suite|ste|unit|floor|building|bldg|circle|cir|court|ct|place|pl|terrace|ter|parkway|pkwy|square|sq|trail|trl|route|rte)\b/i.test(s);
+}
+
+/** A street line: shaped like a genuine address, and no @. */
 export function isPlausibleAddressLine(v) {
   if (!isString(v)) return false;
   const s = v.trim();
@@ -82,7 +150,8 @@ export function isPlausibleAddressLine(v) {
   if (s.includes('@') || /^https?:\/\//i.test(s)) return false;
   if (isPlausiblePhone(s)) return false;               // never accept a phone as an address
   if (hasIconGlyph(s)) return false;                    // an icon-only badge, not a street
-  return /\d/.test(s) || /\b(st|street|rd|road|ave|avenue|blvd|ln|lane|dr|drive|way|hwy|suite|unit|floor)\b/i.test(s);
+  if (looksLikeGoogleInternalData(s)) return false;      // Google's own internal data, not an address
+  return looksLikeGenuineStreetSegment(s);
 }
 
 /**

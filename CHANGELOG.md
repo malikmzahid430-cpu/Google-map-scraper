@@ -1,5 +1,97 @@
 # Changelog
 
+## 4.7.1 — stop Google's own internal data from being read as an address
+
+Scope: `src/collector/validators.js`, `src/collector/detail-parser.js`,
+`tools/run-tests.mjs`. No scraper, enrichment, queue, filter, dedupe,
+storage, export or UI logic changed beyond the validators themselves.
+
+### The bug, precisely
+A report came back with Address/Full Address values like
+`4oR0.2021.O/m=GfLzUe, tNOPW, cZ2KIb, Rq2f7d, omhq0, MJcXSb, WEtKm, B863O` —
+not an address at all, but a fragment of Google's own internal
+`APP_INITIALIZATION_STATE` payload (a build/version label followed by a run
+of Closure-compiler-obfuscated identifiers).
+
+Traced to the root cause before changing anything: `structuralScan()`
+(existing since 4.5.0) walks the entire parsed JSON tree — up to 30,000
+nodes of it — and accepts the FIRST string anywhere that satisfies
+`V.isPlausibleFullAddress`. That validator's actual bar was just "2+
+comma-separated parts, reasonable length, contains a digit or a street
+word somewhere" — which Google's own internal metadata trivially clears,
+since it's comma-joined and contains digits too. Reproduced directly:
+
+```
+structuralScan(jsonTreeContainingTheReportedString, V.isPlausibleFullAddress, ...)
+  -> "4oR0.2021.O/m=GfLzUe, tNOPW, cZ2KIb, Rq2f7d, omhq0, MJcXSb, WEtKm, B863O"
+```
+
+The same weak validator is shared by every extraction path added since
+(`extractFullAddressByAnchor`, `extractFullAddressGeneric` from 4.6.0), so
+all of them were independently reproduced as vulnerable to the identical
+input before any fix was applied — this was one shared root cause wearing
+several hats, not four separate bugs.
+
+Two more instances of the same underlying gap were found by testing the fix
+in a real browser rather than trusting the unit fix alone: `isPlausibleWebsite()`
+independently accepted the same garbage as a "website" (a version-token like
+`4oR0.2021.O` has dots in it — exactly what makes a string look like a
+domain), and detail-parser.js's own separate, un-exported
+`looksLikeLocalityFragment()` (the "City, ST" last-resort scan) still let a
+fake city/postal ("WEtKm" / "B863O") through untouched by the address-validator
+fix, because it was never routed through the same check.
+
+### The fix — stronger shared validation, not another regex band-aid
+`isPlausibleAddressLine()`/`isPlausibleFullAddress()` in `validators.js` now
+require a candidate to actually be shaped like a street ("2105 E Mariposa
+Rd" — a leading house number followed by a space and more text, a
+recognised street/PO-Box word with a space next to it) instead of merely
+"contains a digit somewhere" — the exact gap that let a Google internal
+token through. A new `looksLikeGoogleInternalData()` check, exported so
+every call site can share it, additionally rejects known Google-internal
+signals found while tracing this (`/m=`, `/am=`, `/rt=`, `/rs=`, `wli=`,
+`batchexecute`, `boq_`), version-token shapes (`4oR0.2021.O`), and 2+
+Closure-symbol-shaped comma parts (`cZ2KIb`, `Rq2f7d` — short, mixed
+upper/lower case and digits, no recognisable word). Applied to
+`isPlausibleWebsite()` and `looksLikeLocalityFragment()` too, once both were
+found independently vulnerable to the same input. Nothing was hard-coded to
+reject only the one reported string — every check is a general shape/pattern
+rule, verified against it but not built around it.
+
+None of `structuralScan()`, `extractFullAddressByAnchor()`,
+`extractFullAddressGeneric()`, `composeFullAddress()`, or the array-index
+resolution paths were touched directly — they didn't need to be. All of
+them already funnel every candidate through `V.isPlausibleAddressLine()`/
+`isPlausibleFullAddress()` as their acceptance gate, so strengthening that
+shared gate once fixes every path that relies on it, rather than patching
+each one separately and risking missing one (which is exactly what
+happened with the website/locality-fragment gaps above — found by testing
+end to end, not by inspecting each function in isolation).
+
+### Proof, not just "it compiles"
+26 new tests, including the exact two reported bad values verified rejected
+directly, `structuralScan()`/`extractFullAddressGeneric()`/
+`extractFullAddressByAnchor()` all re-run against the same reproduction that
+first proved the bug and confirmed to no longer surface it, 9 genuine
+addresses (US with suite/hyphenated-unit, UK, Canada, Australia, PO Box)
+re-verified still accepted, and an end-to-end reproduction with the internal
+metadata sitting *alongside* the real address in the same payload — proving
+the real address is found and the garbage never reaches any field, not just
+that garbage-only input goes blank.
+
+Re-ran the full 20-synthetic-business live-browser suite from 4.6.0
+unchanged: still 20/20 complete and correct, 0 regressions. Added two new
+live-browser reproductions of this exact bug shape (internal metadata
+alongside the real address; internal metadata with no real address at all)
+— both now resolve correctly, address AND website fields checked (the
+website field was the one still showing garbage on the first fix attempt,
+caught specifically by testing live rather than trusting the address-only
+unit tests).
+
+360/360 tests pass (26 new). Isolation and build verification clean.
+`chrome.tabs.create` unchanged — still the same two pre-existing,
+unrelated call sites. Individual business tabs opened: 0.
+
 ## 4.7.0 — Google Sheets auth fix + iOS liquid-glass visual redesign
 
 Scope: presentation layer and Google Sheets authentication only —

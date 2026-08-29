@@ -191,6 +191,123 @@ group('TEST 6 & 7 - Website and phone, and what a blank means');
 }
 
 /* ================================================================== */
+group('Address validator rejects Google-internal data — reported bug reproduction');
+
+{
+  // The exact bad values reported: Google's own internal build-label/RPC
+  // metadata, picked up because the old validator only checked "2+ comma
+  // parts with a digit somewhere" — which internal tokens trivially satisfy.
+  const reportedBad1 = '4oR0.2021.O/m=GfLzUe, tNOPW, cZ2KIb, Rq2f7d, omhq0, MJcXSb, WEtKm, B863O';
+  const reportedBad2 = '4oR0.2021.O/m=GfLzUe, tNOPW, cZ2KIb, OXJqAb, b/am=QAYAACAcAoA/';
+  check('the exact reported bad Address value is rejected', validators.isPlausibleAddressLine(reportedBad1) === false);
+  check('the exact reported bad Full Address value is rejected', validators.isPlausibleFullAddress(reportedBad1) === false);
+  check('the second reported bad value (different suffix) is also rejected', validators.isPlausibleFullAddress(reportedBad2) === false);
+
+  // Each individual signal that makes up the fix, isolated.
+  check('a bare Google internal marker ("/m=") is rejected even in an otherwise address-shaped string',
+    validators.isPlausibleFullAddress('123 Fake St/m=xyz, Somewhere, ST 00000') === false);
+  check('a version-token-shaped string ("4oR0.2021.O") is rejected',
+    validators.isPlausibleAddressLine('4oR0.2021.O some other text here') === false);
+  check('2+ closure-symbol-shaped comma parts (mixed case + digits, no spaces) are rejected',
+    validators.isPlausibleFullAddress('start, cZ2KIb, Rq2f7d, MJcXSb, end here now') === false);
+  check('a single closure-symbol-shaped part alone is NOT enough to reject (avoid over-triggering)',
+    validators.isPlausibleFullAddress('123 Main St, cZ2KIb, ST 00000') === true);
+
+  // The fix must not regress genuine addresses — including edge cases that
+  // exercise the exact same "has a digit" surface the old check relied on.
+  const genuineAddresses = [
+    '2105 E Mariposa Rd, Stockton, CA 95205, United States',
+    '6215-1 Wilson Blvd Building 1, Jacksonville, FL 32210, United States',
+    '221B Baker Street, London, NW1 6XE, United Kingdom',
+    '15335 Morrison St Ste 3052, Sherman Oaks, CA 91403',
+    '123 Main St, Toronto, ON M5H 2N2, Canada',
+    '45 George St, Sydney NSW 2000, Australia',
+    'PO Box 4402, Springfield, IL 62701, United States',
+    '3155 Station Ave, Vineland, NJ 08360, United States',
+    '7271 Garden Grove Blvd Ste F, Garden Grove, CA 92841, United States',
+  ];
+  for (const addr of genuineAddresses) {
+    check(`genuine address still accepted: ${addr}`, validators.isPlausibleFullAddress(addr) === true);
+  }
+  check('a bare genuine street (no city/state) still passes isPlausibleAddressLine',
+    validators.isPlausibleAddressLine('2105 E Mariposa Rd') === true);
+  check('but a bare genuine street correctly fails isPlausibleFullAddress (only one part)',
+    validators.isPlausibleFullAddress('2105 E Mariposa Rd') === false);
+
+  // End-to-end: the same reproduction that first proved the bug, now via
+  // the real functions that actually surface candidates in production.
+  const detailParser = await import('../src/collector/detail-parser.js');
+  const badJson6 = new Array(200).fill(null);
+  badJson6[50] = ['boq_travelfrontendserver', reportedBad1];
+  const badJson = new Array(7); badJson[6] = badJson6;
+  const scanResult = detailParser.structuralScan(badJson, validators.isPlausibleFullAddress, { maxDepth: 8, maxNodes: 30000 });
+  check('structuralScan() no longer surfaces the internal token as a candidate address',
+    scanResult === undefined, JSON.stringify(scanResult));
+
+  const genericHtml = ")]}'\n" + JSON.stringify(['boq_x', reportedBad1]);
+  check('extractFullAddressGeneric() no longer surfaces it either',
+    detailParser.extractFullAddressGeneric(genericHtml) === '');
+
+  const anchorHtml = ")]}'\n" + JSON.stringify([reportedBad2]);
+  check('extractFullAddressByAnchor() refuses to even anchor on an already-corrupted "known street"',
+    detailParser.extractFullAddressByAnchor(anchorHtml, '4oR0.2021.O/m=GfLzUe') === '');
+
+  // Full pipeline: parsePlaceDetail() must come back genuinely blank
+  // (Not Found), never the garbage — matching "no valid address exists ->
+  // Address = blank, Full Address = blank, Status = Not Found".
+  const fullBadHtml = ")]}'\n" + JSON.stringify(badJson);
+  const parsed = detailParser.parsePlaceDetail(fullBadHtml);
+  check('parsePlaceDetail() on a payload containing only internal data returns blank, not garbage',
+    parsed.address === '' && parsed.fullAddress === '', JSON.stringify({ address: parsed.address, fullAddress: parsed.fullAddress }));
+
+  // --- found via live-browser reproduction of this exact bug report: the
+  //     WEBSITE validator independently accepted the same reported garbage,
+  //     because a version-token like "4oR0.2021.O" has dots in it — exactly
+  //     what makes a string look like a domain too. ---
+  check('isPlausibleWebsite() rejects the exact reported garbage value',
+    validators.isPlausibleWebsite(reportedBad1) === false);
+  check('isPlausibleWebsite() rejects any candidate containing a raw space or comma',
+    validators.isPlausibleWebsite('not a url, has commas') === false);
+  check('isPlausibleWebsite() still accepts a genuine domain', validators.isPlausibleWebsite('https://alaqsaroofing.com') === true);
+  check('isPlausibleWebsite() still accepts a bare domain with no scheme', validators.isPlausibleWebsite('alaqsaroofing.com') === true);
+
+  // --- also found via the same live-browser reproduction: looksLikeLocalityFragment
+  //     (detail-parser.js's own separate, un-exported validator for the
+  //     "City, ST" last-resort scan) was not covered by the isPlausibleFullAddress
+  //     fix at all, and still let a "City, ST"-shaped TAIL of the garbage
+  //     through, producing a fake city/postal ("WEtKm", "B863O"). ---
+  const localityBadJson6 = new Array(200).fill(null);
+  localityBadJson6[10] = ['boq_mapsfrontend', reportedBad1];
+  localityBadJson6[18] = '7006 Foothill Blvd';
+  const localityBadJson = new Array(7); localityBadJson[6] = localityBadJson6;
+  const localityBadHtml = ")]}'\n" + JSON.stringify(localityBadJson);
+  const parsedWithRealStreet = detailParser.parsePlaceDetail(localityBadHtml);
+  check('the locality-fragment scan no longer manufactures a fake city/postal from internal data',
+    parsedWithRealStreet.city !== 'WEtKm' && parsedWithRealStreet.postalCode !== 'B863O'
+    && !JSON.stringify(parsedWithRealStreet).includes('GfLzUe'),
+    JSON.stringify(parsedWithRealStreet));
+
+  // --- end to end, exactly as reported: internal metadata sitting ALONGSIDE
+  //     the genuine address in the same payload must resolve to the real
+  //     address, with the garbage never surfacing in ANY field. ---
+  const placeDetail = await import('../src/collector/place-detail.js');
+  const alongsideJson6 = new Array(200).fill(null);
+  alongsideJson6[10] = ['boq_mapsfrontend', reportedBad1];
+  alongsideJson6[18] = '7006 Foothill Blvd';
+  alongsideJson6[145] = 'Tujunga, CA 91042';
+  const alongsideJson = new Array(7); alongsideJson[6] = alongsideJson6;
+  const alongsideHtml = ")]}'\n" + JSON.stringify(alongsideJson);
+  const blankDetail = { businessName: '', category: '', rating: '', reviewCount: '', address: '', fullAddress: '',
+    city: '', state: '', postalCode: '', country: '', website: '', phone: '', latitude: '', longitude: '', via: {} };
+  const mergedReal = placeDetail.mergeEmbeddedPayload(blankDetail, alongsideHtml);
+  check('reported bug reproduction: the real address is found and the garbage never appears anywhere in the record',
+    mergedReal.fullAddress === '7006 Foothill Blvd, Tujunga, CA 91042'
+    && !JSON.stringify(mergedReal).includes('GfLzUe')
+    && !JSON.stringify(mergedReal).includes('/m='),
+    JSON.stringify(mergedReal));
+}
+
+/* ================================================================== */
 group('Website/phone read directly off the results card — no tab, no fetch');
 
 {

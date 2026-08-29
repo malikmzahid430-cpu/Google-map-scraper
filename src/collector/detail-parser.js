@@ -277,6 +277,12 @@ function looksLikeLocalityFragment(v) {
   if (s.length < 4 || s.length > 80) return false;
   if (s.includes('@') || /^https?:\/\//i.test(s)) return false;
   if (V.isPlausiblePhone(s)) return false;
+  // A locality tail is short-and-loose by design (no street required), which
+  // is exactly the gap that let a reported Google-internal data string
+  // ("4oR0.2021.O/m=GfLzUe, ..., WEtKm, B863O") through as a fake "City, ST"
+  // tail — its own final segment happened to match the loose comma-tail
+  // shape below. Reject the same internal-data signature here too.
+  if (V.looksLikeGoogleInternalData(s)) return false;
   // "City, ST 12345" / "City, Postcode" — a comma followed by a short tail.
   if (s.includes(',') && /,\s*[A-Za-z0-9][A-Za-z0-9.\s-]{1,24}$/.test(s)) return true;
   // "Manchester M1 2AB" — a place name directly followed by a postcode-shaped tail.
