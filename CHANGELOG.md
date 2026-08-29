@@ -1,5 +1,88 @@
 # Changelog
 
+## 4.7.0 — Google Sheets auth fix + iOS liquid-glass visual redesign
+
+Scope: presentation layer and Google Sheets authentication only —
+`src/export/sheets.js`, `src/sidepanel/views/export.js`,
+`src/sidepanel/views/home.js`, `src/sidepanel/styles.css`,
+`tools/run-tests.mjs`. No scraper, enrichment, queue, filter, dedupe, storage
+or export logic changed.
+
+### Fixed — Google Sheets showed "Last attempt failed" on a plain first load
+`getStatus()` called `chrome.identity.getAuthToken({interactive:false})`
+unconditionally to check sign-in state. Chrome returns the exact same
+generic `"OAuth2 not granted or revoked"` error for two completely
+different situations: a connection that genuinely expired/was revoked, AND
+an account that has simply never signed in yet. The UI could not tell them
+apart, so every brand-new install showed a scary red "Last attempt failed"
+banner before the user had ever clicked anything.
+
+Fixed by remembering (in the extension's own storage, never the token
+itself — still 100% `chrome.identity`, no manual token storage anywhere) that
+an account has connected before. `getStatus()` now only asks Chrome for a
+token at all once that has happened, so a fresh install shows a plain
+"Not connected" card with no error, while a real expiry/revocation shows a
+distinct "Connection problem — Sign in again" state. Neither ever exposes
+the raw OAuth error string to the user — that stays in Diagnostics only.
+
+Also added: a cached token the Sheets API itself rejects with 401 (revoked
+server-side but Chrome hadn't noticed, so it kept handing it out) is now
+detected, cleared via `chrome.identity.removeCachedAuthToken`, and the
+operation is retried once with a fresh interactive token automatically —
+the "automatically clear the invalid token and allow the user to
+authenticate again" behavior, rather than leaving the user stuck replaying
+a dead token until they manually find a sign-out button. And fixed a
+pre-existing bug in `createSpreadsheet()` that overwrote the entire stored
+Sheets settings object (including the new connected flag) instead of
+merging into it.
+
+13 new tests cover: fresh-install shows no error, a successful sign-in
+marks the account connected, a revoked/expired connection is reported as
+"expired" (not "never connected"), sign-out cleanly resets to "not
+connected", a 401 on a stale cached token is recovered from automatically
+with exactly one retry, and a reauth attempt that itself fails surfaces
+`needsReauth` instead of a raw technical error.
+
+### Redesigned — iOS-inspired liquid glass, blue/cyan/violet water background
+Every view keeps its existing class names and DOM structure — this is a
+design-token and light-markup pass, not a rebuild. Changed:
+- **Background**: a static, layered water-wash (blue → cyan → violet → warm
+  pink radial gradients plus two soft "glass reflection" highlights) behind
+  translucent cards — CSS gradients only, no image assets, no animation
+  loop, so it costs nothing at runtime beyond the initial paint.
+- **Header**: a blue → violet gradient banner with the Al-Aqsa logo, white
+  uppercase "AL-AQSA SCRAPER" wordmark, and the Google Maps connection pill,
+  replacing the previous plain glass bar.
+- **Nav tabs**: the selected tab now gets a soft gradient glass highlight
+  with an inset accent ring instead of a solid fill.
+- **Hero search card**: a tinted gradient wash and a blue→violet→cyan top
+  edge instead of a flat white panel.
+- **Colorful icon badges**: the live field-coverage tiles shown while
+  collecting (Website/Phone/Full Address/Rating) now use circular gradient
+  icon badges (green/blue/orange/purple) instead of plain text rows.
+- **Primary CTA**: "Start Collecting" is now "🚀 START COLLECTING" with a
+  bolder blue→violet gradient and glow, the single most prominent action on
+  the Home screen.
+- **Google Sheets card**: redesigned into the three states specified —
+  "Not connected" (clean, no error) / "Connected" (green pill + destination
+  + Create/Use Sheet actions) / "Connection problem" (amber pill + a single
+  "Sign in again" action) — never showing a raw OAuth error string.
+- Verified in both light and dark (`prefers-color-scheme`) — the existing
+  dark-mode token overrides needed no structural changes, just richer
+  colors carried through automatically.
+
+### Tested
+Loaded the packaged extension unpacked into a real Chromium via Playwright
+at side-panel width (380×800) with zero console errors, and screenshotted
+every major view (Home in idle/collecting/field-picker states, Data, Filter,
+Enrich, Jobs, all three Google Sheets states, Settings) in both light and
+dark mode to visually verify the redesign before shipping. `chrome.tabs.create`
+greped across the whole codebase: still exactly the same two pre-existing
+call sites (opening the exported Sheet, starting the next queued search),
+neither touched — **individual business tabs opened: 0**, unchanged.
+
+332/332 tests pass (13 new). Isolation and build verification clean.
+
 ## 4.6.0 — Full Address: anchor-based recovery, ported from a prior working version
 
 Scope: `src/collector/detail-parser.js`, `src/collector/place-detail.js`,

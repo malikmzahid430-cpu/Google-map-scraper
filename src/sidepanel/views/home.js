@@ -230,7 +230,7 @@ function renderStatusCard(state, job, status, running, paused, active) {
       <div class="status-line"><span class="dot"></span><span>Ready</span></div>
       <div style="height:10px"></div>
       <button class="primary cta block" data-act="start" ${state.busy ? 'disabled' : ''}>
-        ${state.busy ? 'Starting…' : (multi ? 'START ALL SEARCHES' : 'START COLLECTING LEADS')}
+        ${state.busy ? 'Starting…' : (multi ? '&#128640; START ALL SEARCHES' : '&#128640; START COLLECTING')}
       </button>
       <p class="hint tiny" style="margin-top:9px">Collection keeps running if you switch tabs or close this panel — come back anytime to see progress.</p>
     </div>`;
@@ -254,8 +254,8 @@ function renderStatusCard(state, job, status, running, paused, active) {
          <button class="lg grow danger" data-act="stop">STOP COLLECTION</button>
        </div>
        ${stuck ? `<button class="block" data-act="retry" style="margin-top:7px">${needsAttention ? '&#9888; Needs attention — retry now' : '&#9888; Recovering — nudge the collector'}</button>` : ''}`
-    : `<button class="primary lg block" data-act="start" ${state.busy ? 'disabled' : ''}>
-         ${state.busy ? 'Starting…' : 'START COLLECTING LEADS'}
+    : `<button class="primary cta block" data-act="start" ${state.busy ? 'disabled' : ''}>
+         ${state.busy ? 'Starting…' : '&#128640; START COLLECTING'}
        </button>`;
 
   const done = [JOB_STATUS.COMPLETED, JOB_STATUS.STOPPED, JOB_STATUS.ERROR].includes(status);
@@ -325,10 +325,10 @@ function renderLiveFieldGrid(q) {
   const pick = (key) => (q.fields && q.fields[key] ? q.fields[key].found : 0);
   return `
   <div class="field-grid">
-    <div class="field-tile"><span class="k">Website</span><span class="v">${pick('website')}</span></div>
-    <div class="field-tile"><span class="k">Phone</span><span class="v">${pick('phone')}</span></div>
-    <div class="field-tile"><span class="k">Full Address</span><span class="v">${pick('fullAddress')}</span></div>
-    <div class="field-tile"><span class="k">Rating</span><span class="v">${pick('rating')}</span></div>
+    <div class="field-tile"><span class="icon-badge web">&#127760;</span><span class="k">Website</span><span class="v">${pick('website')}</span></div>
+    <div class="field-tile"><span class="icon-badge phone">&#128222;</span><span class="k">Phone</span><span class="v">${pick('phone')}</span></div>
+    <div class="field-tile"><span class="icon-badge addr">&#128205;</span><span class="k">Full Address</span><span class="v">${pick('fullAddress')}</span></div>
+    <div class="field-tile"><span class="icon-badge rating">&#11088;</span><span class="k">Rating</span><span class="v">${pick('rating')}</span></div>
   </div>`;
 }
 

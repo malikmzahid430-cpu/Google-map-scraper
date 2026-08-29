@@ -778,6 +778,149 @@ group('TEST 16, 17 & 25 - Optional failures never stop anything');
 }
 
 /* ================================================================== */
+group('Google Sheets auth — never-signed-in vs expired/revoked, auto-reauth on 401');
+
+{
+  const storage = await import('../src/core/storage.js');
+  const priorChrome = globalThis.chrome;
+  storage.__resetMemory();
+
+  const CLIENT_ID = '113148532135-test.apps.googleusercontent.com';
+  let removedTokens = [];
+  let interactivePrompts = 0;
+  let cachedToken = null;    // faithfully mimics Chrome's own token cache
+  let tokenSerial = 0;
+  let nextInteractiveFails = false;
+
+  // A faithful mock of chrome.identity: a cached token is returned AS-IS
+  // regardless of the `interactive` flag (real Chrome only prompts when
+  // there is NO cached token at all) — getting this wrong is exactly what
+  // made the first version of this test pass for the wrong reason.
+  function installChromeIdentityMock() {
+    removedTokens = [];
+    interactivePrompts = 0;
+    cachedToken = null;
+    tokenSerial = 0;
+    nextInteractiveFails = false;
+    globalThis.chrome = {
+      runtime: {
+        getManifest: () => ({ oauth2: { client_id: CLIENT_ID, scopes: ['https://www.googleapis.com/auth/spreadsheets'] } }),
+        id: 'test-extension-id',
+        lastError: null,
+      },
+      identity: {
+        getAuthToken({ interactive }, cb) {
+          if (interactive) interactivePrompts++;
+          if (cachedToken) {
+            globalThis.chrome.runtime.lastError = null;
+            cb(cachedToken);
+            return;
+          }
+          if (!interactive || nextInteractiveFails) {
+            globalThis.chrome.runtime.lastError = { message: 'OAuth2 not granted or revoked.' };
+            cb(null);
+            return;
+          }
+          tokenSerial++;
+          cachedToken = `token-${tokenSerial}`;
+          globalThis.chrome.runtime.lastError = null;
+          cb(cachedToken);
+        },
+        removeCachedAuthToken({ token }, cb) {
+          removedTokens.push(token);
+          if (cachedToken === token) cachedToken = null;
+          cb && cb();
+        },
+      },
+    };
+  }
+
+  // --- Scenario 1: a completely fresh install, never signed in. ---
+  installChromeIdentityMock();
+  const freshStatus = await sheets.getStatus();
+  check('a fresh install with no prior sign-in shows no error banner at all',
+    freshStatus.everConnected === false && freshStatus.reason === '', JSON.stringify(freshStatus));
+  check('a fresh install correctly reports not signed in',
+    freshStatus.signedIn === false);
+  check('getStatus() does not even call chrome.identity on a fresh install (no needless prompt/failure)',
+    interactivePrompts === 0);
+
+  // --- Scenario 2: successful interactive sign-in, then status reflects it. ---
+  const signInResult = await sheets.signIn();
+  check('signIn() succeeds and returns a token', signInResult.ok === true && signInResult.token === 'token-1');
+  const connectedStatus = await sheets.getStatus();
+  check('after a successful sign-in, getStatus reports connected with no error',
+    connectedStatus.everConnected === true && connectedStatus.signedIn === true && connectedStatus.reason === '',
+    JSON.stringify(connectedStatus));
+
+  // --- Scenario 3: Chrome's own cached token has since expired/gone (its
+  //     own lifecycle, nothing this extension controls) — interactive:false
+  //     now fails exactly like a fresh install would. Must still be
+  //     distinguishable from "never connected" via everConnected. ---
+  cachedToken = null;
+  const expiredStatus = await sheets.getStatus();
+  check('a revoked connection is reported as expired, not as "never connected"',
+    expiredStatus.everConnected === true && expiredStatus.signedIn === false && expiredStatus.reason,
+    JSON.stringify(expiredStatus));
+
+  // --- Scenario 4: sign out cleanly resets to "not connected" (not "expired"). ---
+  await sheets.signIn(); // re-establish a cached token (token-2) first
+  await sheets.signOut();
+  const signedOutStatus = await sheets.getStatus();
+  check('after an explicit sign-out, status is clean "not connected", not "expired"',
+    signedOutStatus.everConnected === false, JSON.stringify(signedOutStatus));
+
+  // --- Scenario 5: withReauth — a cached token the API rejects with 401 is
+  //     cleared and retried ONCE with a fresh interactive token, transparently. ---
+  installChromeIdentityMock();
+  await sheets.signIn(); // cachedToken = 'token-1'
+
+  const priorFetch = globalThis.fetch;
+  let fetchCalls = [];
+  globalThis.fetch = async (url, opts) => {
+    const auth = (opts && opts.headers && opts.headers.Authorization) || '';
+    fetchCalls.push(auth);
+    if (auth.includes('token-1')) {
+      // The cached token is stale — Google rejects it even though Chrome
+      // still had it cached and handed it out without complaint.
+      return { ok: false, status: 401, text: async () => JSON.stringify({ error: { message: 'Invalid Credentials' } }) };
+    }
+    // Any fresher token succeeds.
+    return {
+      ok: true, status: 200,
+      text: async () => JSON.stringify({ spreadsheetId: 'sheet123', properties: { title: 'Recovered' } }),
+    };
+  };
+
+  const created = await sheets.createSpreadsheet('Test Sheet', ['businessName']);
+  check('a 401 on a stale cached token is recovered from automatically (ok:true after retry)',
+    created.ok === true && created.spreadsheetId === 'sheet123', JSON.stringify(created));
+  check('the stale token was removed from the Chrome token cache',
+    removedTokens.includes('token-1'), JSON.stringify(removedTokens));
+  check('exactly one retry happened — the first call used the stale token, the second a fresh one',
+    fetchCalls.length >= 2 && fetchCalls[0].includes('token-1') && !fetchCalls[fetchCalls.length - 1].includes('token-1'),
+    JSON.stringify(fetchCalls));
+
+  // --- Scenario 6: if the retry's fresh sign-in ALSO fails (truly revoked,
+  //     not just a stale cache), the caller gets a clean "sign in again"
+  //     signal — never stuck silently retrying the same dead token forever. ---
+  installChromeIdentityMock();
+  await sheets.signIn(); // cachedToken = 'token-1'
+  globalThis.fetch = async () => ({ ok: false, status: 401, text: async () => JSON.stringify({ error: { message: 'Invalid Credentials' } }) });
+  nextInteractiveFails = true; // the retry's fresh interactive attempt (after the 401 clears the cache) fails too
+  const stillBroken = await sheets.createSpreadsheet('Test Sheet 2', ['businessName']);
+  check('when reauth itself fails too, the caller gets needsReauth rather than a raw technical error',
+    stillBroken.ok === false && stillBroken.needsReauth === true, JSON.stringify(stillBroken));
+  const afterFailedReauth = await sheets.getStatus();
+  check('a reauth that itself fails correctly resets to disconnected, not silently "connected"',
+    afterFailedReauth.everConnected === false, JSON.stringify(afterFailedReauth));
+
+  globalThis.fetch = priorFetch;
+  globalThis.chrome = priorChrome;
+  storage.__resetMemory();
+}
+
+/* ================================================================== */
 group('TESTS 19 & 20 - Pause, Resume, Stop');
 
 {

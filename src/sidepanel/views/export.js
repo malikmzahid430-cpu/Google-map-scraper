@@ -85,11 +85,29 @@ function renderSheetsCard(state, rows) {
     </div>`;
   }
 
+  // Was connected before and something is now wrong (expired/revoked token,
+  // or an in-flight operation's reauth attempt also failed) — a real
+  // problem, distinct from an ordinary "never connected yet" first load.
+  if (s.everConnected && !s.signedIn) {
+    return `
+    <div class="card">
+      <div class="sheets-head">
+        <span class="eyebrow">Google Sheets</span>
+        <span class="chip chip-warn"><i class="dot"></i>Connection problem</span>
+      </div>
+      <p class="hint">Your Google account connection expired. Sign in again to keep exporting to Sheets.</p>
+      <button class="primary block" data-act="sheets-signin">Sign in again</button>
+    </div>`;
+  }
+
   if (!s.signedIn) {
     return `
     <div class="card">
-      <h2>Google Sheets <span class="count">signed out</span></h2>
-      ${s.reason ? banner('error', `<strong>Last attempt failed.</strong><br><span class="hint tiny">${esc(s.reason)}</span>`) : ''}
+      <div class="sheets-head">
+        <span class="eyebrow">Google Sheets</span>
+        <span class="chip chip-muted">Not connected</span>
+      </div>
+      <p class="hint">Connect your Google account to export leads directly to Sheets.</p>
       <button class="primary block" data-act="sheets-signin">Sign in with Google</button>
       <p class="hint tiny">Scopes requested: create and edit spreadsheets this extension makes. No token is stored by the extension — Chrome holds it.</p>
     </div>`;
@@ -97,12 +115,15 @@ function renderSheetsCard(state, rows) {
 
   return `
   <div class="card">
-    <h2>Google Sheets <span class="count">signed in</span></h2>
+    <div class="sheets-head">
+      <span class="eyebrow">Google Sheets</span>
+      <span class="chip chip-ok"><i class="dot"></i>Connected</span>
+    </div>
     ${s.spreadsheetName || s.spreadsheetId
     ? `<p class="hint">Destination: <strong>${esc(s.spreadsheetName || s.spreadsheetId)}</strong> → sheet <code>${esc(s.worksheet || 'Leads')}</code></p>`
-    : '<p class="hint">No destination chosen yet.</p>'}
+    : '<p class="hint">Google account connected. Choose a destination below.</p>'}
     <div class="divider"></div>
-    <label class="field"><span>Use an existing spreadsheet (paste its URL or ID)</span>
+    <label class="field"><span>Export to existing sheet (paste its URL or ID)</span>
       <input type="text" id="sheet-id" placeholder="https://docs.google.com/spreadsheets/d/…" value="${esc(s.spreadsheetId || '')}">
     </label>
     <div class="row">
