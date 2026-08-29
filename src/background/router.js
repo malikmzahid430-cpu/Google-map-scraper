@@ -257,16 +257,26 @@ async function startDetailResolution(jobId) {
   const tab = await findMapsTab();
 
   const cfg = await settings();
-  await jobs.updateJob(id, { lastActivity: 'Resolving place details' });
+  const pendingCount = records.filter((r) => !r.fullAddress || !r.website || !r.phone).length;
+  await jobs.updateJob(id, {
+    lastActivity: 'Resolving place details',
+    progress: { note: 'Full Address resolution started' },
+    detail: { done: 0, total: pendingCount, resolved: 0, notFound: 0, failed: 0, aborted: false, ranAt: null },
+  });
+  await notifyUi();
 
   const run = detailResolver.resolveAll(records, cfg, {
     onProgress: async (status) => {
+      const remaining = Math.max(0, status.total - status.done);
       await jobs.updateJob(id, {
         detail: {
           done: status.done, total: status.total, resolved: status.resolved,
-          notFound: status.notFound, failed: status.failed,
+          notFound: status.notFound, failed: status.failed, aborted: false,
         },
-        progress: { note: `Resolving full address ${status.done} / ${status.total}` },
+        progress: {
+          note: `Resolving Full Address: ${status.done}/${status.total} processed — `
+            + `${status.resolved} successful, ${status.failed} failed, ${remaining} remaining`,
+        },
         lastActivity: status.note,
       });
       await notifyUi();
@@ -289,9 +299,14 @@ async function startDetailResolution(jobId) {
         // home.js and enrich.js both use — correctly clears whether this
         // run finished naturally or was stopped early.
         done: result.stats.done, total: result.stats.done, resolved: result.stats.resolved,
-        notFound: result.stats.notFound, failed: result.stats.failed, ranAt: Date.now(),
+        notFound: result.stats.notFound, failed: result.stats.failed,
+        aborted: !!result.aborted, ranAt: Date.now(),
       },
-      progress: { note: result.aborted ? 'Detail resolution stopped' : 'Details resolved' },
+      progress: {
+        note: result.aborted
+          ? 'Full Address resolution stopped'
+          : `Full Address enrichment complete — ${result.stats.resolved} resolved, ${result.stats.notFound} not found, ${result.stats.failed} failed`,
+      },
       lastActivity: 'Detail resolution finished',
     });
     await jobs.refreshQuality(id, result.records);
@@ -873,7 +888,15 @@ export const handlers = {
     const r = await startDetailResolution(p && p.jobId);
     return r.ok ? ok(r) : fail(r.error);
   },
-  [MSG.DETAIL_STOP]: () => ok(detailResolver.stopDetail()),
+  [MSG.DETAIL_STOP]: async () => {
+    const result = detailResolver.stopDetail();
+    // Background-side abort only stops NEW records from being dispatched —
+    // it has no reach into the content script's own in-flight iframes.
+    // Tell that tab directly so it tears them down immediately.
+    const tab = await findMapsTab();
+    if (tab) await sendToTab(tab.id, MSG.DETAIL_STOP);
+    return ok(result);
+  },
   [MSG.DETAIL_PAUSE]: () => ok(detailResolver.pauseDetail()),
   [MSG.DETAIL_RESUME]: () => ok(detailResolver.resumeDetail()),
 

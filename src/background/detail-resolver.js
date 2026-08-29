@@ -229,10 +229,16 @@ export async function resolveAll(records, settings = {}, hooks = {}, tabId = nul
       let outcome = null;
       for (let attempt = 0; attempt <= retries; attempt++) {
         if (runState.abort) return;
+        // The content script's own DETAIL_EXTRACT handler can spend up to
+        // settings.detailTimeoutMs on Tier 1 (fetch), then — only when Tier 1
+        // found no Full Address — up to another ~10s rendering Tier 2's
+        // hidden iframe (see iframe-address.js). This outer bound has to
+        // comfortably cover both phases plus messaging overhead, not just
+        // Tier 1 alone.
         outcome = await safeCall(
           'detail.resolve',
           () => resolveOne(tabId, record, settings),
-          { timeout: (Number(settings.detailTimeoutMs) || 15000) + 5000, fallback: null },
+          { timeout: (Number(settings.detailTimeoutMs) || 15000) + 15000, fallback: null },
         );
         if (outcome.ok && outcome.value && outcome.value.status !== 'failed') break;
         if (attempt < retries) await sleep(400 * (attempt + 1));

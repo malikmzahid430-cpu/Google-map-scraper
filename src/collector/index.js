@@ -6,7 +6,7 @@
  * collector, and forward the collector's callbacks to the service worker.
  * Keeping it this thin is what makes the Start path auditable at a glance.
  */
-import { MSG, JOB_STATUS } from '../core/constants.js';
+import { MSG, JOB_STATUS, FIELD_STATUS } from '../core/constants.js';
 import { listen, ok, fail, send } from '../core/bus.js';
 import { createLogger } from '../core/logger.js';
 import * as diag from '../core/diagnostics.js';
@@ -16,6 +16,7 @@ import * as S from './selectors.js';
 import { parseCard } from './card-parser.js';
 import { fetchPlaceDetail, diagnosePlaceDetail } from './place-detail.js';
 import { runIframeAddressProbe } from './iframe-probe.js';
+import { resolveFullAddressViaIframe, abortAll as abortIframeAddressResolution } from './iframe-address.js';
 
 const log = createLogger('content');
 
@@ -74,19 +75,47 @@ const handlers = {
    * tab or navigating this one.
    *
    * Sent by the detail resolver in the background to whichever Maps tab is
-   * already open. This tab's own `fetch()` of the place URL is same-origin —
-   * it carries the user's Google session automatically — so the response is
-   * rich enough to parse directly. This never touches this tab's own DOM,
-   * URL or scroll position, so it cannot disturb a collection running here.
+   * already open. Tier 1 is this tab's own `fetch()` of the place URL,
+   * same-origin — it carries the user's Google session automatically — so
+   * the response is rich enough to parse directly for most fields, and for
+   * Full Address whenever the response happens to carry a JSON payload or
+   * JSON-LD block. When it doesn't (confirmed live: Google increasingly
+   * serves place pages whose Full Address only ever exists in
+   * `[data-item-id="address"]`, an element its own JavaScript constructs
+   * after the page loads — something a plain fetch()+DOMParser can never
+   * see), Tier 2 renders the page in a hidden, same-origin iframe and reads
+   * that exact element — see iframe-address.js for the full reasoning and
+   * its bounds (max 2 concurrent, 10s timeout, always torn down). Neither
+   * tier ever navigates or touches this tab's own DOM, URL or scroll
+   * position, so collection running here is never disturbed.
    */
   [MSG.DETAIL_EXTRACT]: async (payload) => {
     const url = payload && payload.url;
     if (!url) return fail('No place URL supplied.');
+
     const result = await fetchPlaceDetail(url, {
       timeoutMs: (payload && payload.timeoutMs) || 12000,
       knownStreet: (payload && payload.knownStreet) || '',
     });
-    return result.ok ? ok(result.data) : fail(result.error);
+    if (!result.ok) return fail(result.error);
+
+    const data = result.data;
+    if (!data.fullAddress) {
+      const tier2 = await resolveFullAddressViaIframe(url, {
+        timeoutMs: (payload && payload.iframeTimeoutMs) || undefined,
+      });
+      if (tier2.status === 'resolved' && tier2.fullAddress) {
+        data.fullAddress = tier2.fullAddress;
+        data.via = { ...(data.via || {}), fullAddress: tier2.via };
+        data.fullAddressStatus = FIELD_STATUS.FOUND;
+      } else if (tier2.status === 'failed' && tier2.error) {
+        // Not a fatal error for the whole record — Tier 1 may already have
+        // resolved website/phone. Recorded for Diagnostics visibility only.
+        data.via = { ...(data.via || {}), fullAddressTier2Error: tier2.error };
+      }
+    }
+
+    return ok(data);
   },
 
   /**
@@ -100,6 +129,18 @@ const handlers = {
     if (!url) return fail('No place URL supplied.');
     const result = await runIframeAddressProbe(url, { timeoutMs: (payload && payload.timeoutMs) || 10000 });
     return ok(result);
+  },
+
+  /**
+   * Detail resolution was stopped from the panel. Background-side stopping
+   * (detailResolver.stopDetail()) only prevents NEW records from being
+   * dispatched — it cannot reach into this tab's own in-flight iframes.
+   * This tears every one of them down immediately instead of leaving them
+   * to run out their timeout.
+   */
+  [MSG.DETAIL_STOP]: () => {
+    abortIframeAddressResolution();
+    return ok(null);
   },
 
   [MSG.COLLECT_PAUSE]: () => ok(collector.pause()),

@@ -262,6 +262,7 @@ function renderStatusCard(state, job, status, running, paused, active) {
   const q = state.quality();
   const tech = job.technical || { total: 0, byCategory: {} };
   const resolving = detail.total > 0 && detail.done < detail.total;
+  const detailFinished = !resolving && detail.ranAt;
   const label = jobStatusLabel(job, stuck, needsAttention);
 
   return `
@@ -292,7 +293,17 @@ function renderStatusCard(state, job, status, running, paused, active) {
     </div>
 
     ${active ? renderLiveFieldGrid(q) : ''}
-    ${resolving ? `<p class="hint" style="margin-top:9px">Resolving full address ${detail.done} / ${detail.total}</p>` : ''}
+    ${resolving ? `
+      <div class="row" style="margin-top:9px; align-items:center; gap:8px">
+        <p class="hint" style="margin:0; flex:1">${esc((job.progress && job.progress.note) || `Resolving Full Address ${detail.done} / ${detail.total}`)}</p>
+        <button class="ghost small danger" data-act="stop-detail">Stop</button>
+      </div>` : ''}
+    ${detailFinished ? `
+      <p class="hint" style="margin-top:9px">
+        ${detail.aborted
+    ? `<strong>Full Address resolution — Stopped.</strong> ${detail.resolved || 0} resolved before stopping.`
+    : `<strong>&#10003; Full Address enrichment complete</strong> — ${detail.resolved || 0} resolved, ${detail.notFound || 0} not found, ${detail.failed || 0} failed (of ${detail.total || 0}).`}
+      </p>` : ''}
 
     <div class="divider"></div>
     ${controls}
@@ -542,6 +553,7 @@ export function bindHome() {
       case 'resume': await app.command(MSG.COLLECT_RESUME); break;
       case 'stop': await app.command(MSG.COLLECT_STOP); break;
       case 'retry': await app.command(MSG.COLLECT_STATUS, {}, { successMessage: 'Collector poked.' }); break;
+      case 'stop-detail': await app.command(MSG.DETAIL_STOP, null, { successMessage: 'Full Address resolution stopped.' }); break;
 
       case 'dedupe':
         await app.command(MSG.DEDUPE_RUN, {}, {

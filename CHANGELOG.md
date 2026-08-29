@@ -1,5 +1,98 @@
 # Changelog
 
+## 4.7.3 — Full Address Tier 2: hidden-iframe render for pages fetch() can't see
+
+Scope: new `src/collector/iframe-address.js`; `src/collector/index.js`
+(DETAIL_EXTRACT/DETAIL_STOP handlers), `src/background/router.js`
+(DETAIL_STOP relay, progress/completion reporting), `src/background/
+detail-resolver.js` (one timeout number), `src/sidepanel/views/home.js`
+(Stop button + completion message for this stage). Business Name,
+Category, Rating, Reviews, Address, Website, Phone, Email/Social
+enrichment, export, filters, dedupe and jobs are unchanged.
+
+### Why a second tier was needed
+4.7.2 fixed Full Address reading CSS as data, but a live test against a
+real business (Diagnostics' "Live detail-fetch probe") showed a deeper
+issue: for a growing share of places, Google's raw HTTP response — what
+Tier 1's `fetch()` + `DOMParser` actually receives — contains no
+`APP_INITIALIZATION_STATE`, no JSON-LD, and no trace of the address text
+at all. A direct "View Source" on that same URL confirmed it: the address
+genuinely is not in the response Tier 1 reads. Yet the same URL's live,
+JavaScript-rendered DOM (confirmed in Chrome DevTools) has the complete
+address sitting in `[data-item-id="address"]` — the exact element
+`place-detail.js`'s `extractAddress()` already reads for the DOM path.
+`DOMParser` never executes `<script>` tags, by spec, so no amount of
+parsing the fetched text can ever produce that element; the gap is
+architectural, not a parsing bug.
+
+### The fix — a hidden, same-origin iframe as Tier 2
+A proof-of-concept (a temporary "Iframe DOM probe" added to Diagnostics)
+tested whether a hidden `<iframe>` injected into the existing Maps tab —
+same origin, no `chrome.tabs.create`, no visible tab — could render the
+real page and expose that element. It succeeded against a real business.
+`src/collector/iframe-address.js` is the production version:
+- Only runs for a record Tier 1's fetch already couldn't resolve; Tier 1
+  is completely unchanged and still tried first for every record.
+- Reads the address via the exact same, already-validated
+  `place-detail.js` `extractAddress()` function, pointed at the iframe's
+  own rendered document — no new selector or validation logic.
+- Bounded: at most 2 concurrent iframes at once (independent of the
+  background's own fetch concurrency, which can be up to 8), each with a
+  10-second hard timeout, always torn down in a `finally` — success,
+  timeout, load error, same-origin access error, or abort.
+- Never invents data: a candidate is only accepted if it passes the
+  existing `V.isPlausibleFullAddress()` validator; a timeout or failure
+  resolves to blank/Not Found.
+- `abortAll()` (wired to Stop) tears down every active iframe and rejects
+  any call still waiting on one to load immediately, using a generation
+  counter rather than a sticky flag — so a later, genuinely new run is
+  never left permanently unable to use this tier just because an earlier
+  run was stopped.
+
+Also fixed as part of wiring this in: the outer per-record safety timeout
+in `detail-resolver.js` (previously `detailTimeoutMs + 5s`) was widened to
+`+ 15s` so a record that legitimately needs the full Tier 1 + Tier 2
+budget is never cut off early. `DETAIL_STOP` now also reaches the content
+script directly (background-side abort alone can't reach into a tab's own
+in-flight iframes). The Home status card now shows live progress
+("Resolving Full Address X/Y processed — A successful, B failed, C
+remaining"), a Stop button for this stage specifically, and — once a run
+finishes — either "Full Address enrichment complete — A resolved, B not
+found, C failed" or "Full Address resolution — Stopped", instead of the
+progress line simply vanishing with no final message.
+
+### Proof, not just "it compiles"
+21 new live-browser tests against the real, unmodified `iframe-address.js`
+running in actual Chromium (same-origin harness served from a mocked
+`google.com` origin, exactly mirroring the real content-script
+environment): single-business success reading the live-rendered element,
+notfound/timeout when the element never appears, bounded concurrency
+(verified the live iframe count never exceeds 2 even under 5 concurrent
+requests), STOP tearing down 3 in-flight 9-second iframes in under 3
+seconds instead of waiting them out, a later call after a stop still
+resolving normally (not permanently stuck aborted), a load failure
+reporting a reason and still cleaning up, and an end-to-end Tier1→Tier2
+merge test (Tier 1 genuinely finds nothing — the address was
+base64-encoded in the mock page specifically so no static text scan could
+find it — Tier 2 resolves it via the live DOM). Every case also asserted
+zero stray iframes left behind afterward.
+
+Re-ran the 371-test unit suite (0 changed — this tier needs a real
+browser, which the Node suite doesn't have) plus the CSS-contaminated
+20-business live-browser suite from 4.7.2: still 20/20 correct Full
+Address, 0 regressions — all 20 already resolve via Tier 1, confirming
+Tier 2 never interferes with the existing path. Build and isolation
+verification clean (`src/collector/collector.js`, the Start-button path,
+unchanged at 9 reachable modules — this tier is only reachable through the
+content script's DETAIL_EXTRACT handler, never the fast card scraper).
+`chrome.tabs.create` unchanged — still the same two pre-existing,
+unrelated call sites. Individual business tabs opened: 0.
+
+The temporary "Iframe DOM probe" diagnostic added while investigating this
+(src/collector/iframe-probe.js) is left in place, unmodified, alongside
+the new production module — kept for future debugging, not part of the
+production resolve path.
+
 ## 4.7.2 — Full Address parser was reading CSS/style content as an address
 
 Scope: `src/collector/detail-parser.js`, `tools/run-tests.mjs`. No scraper,
